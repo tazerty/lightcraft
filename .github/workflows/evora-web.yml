@@ -1,0 +1,290 @@
+# CI web d'Evora pour le fork tazerty/lightcraft (futur moteur d'Evora Revela).
+#
+# Écrite par Evora à partir de packaging/web/package.sh, packaging/env.sh, xtask/src/web.rs et
+# docs/web.md de l'amont (MIT OR Apache-2.0). Rien n'est repris de storytold/craft-common-actions.
+# Règles : aucune action tierce (seulement actions/checkout, actions/cache, actions/upload-artifact,
+# épinglées par SHA complet), toolchain Rust installée par rustup à version exacte, outils de build
+# installés à version exacte (cargo install --locked), permissions en lecture seule, aucun secret.
+#
+# Sortie : artefact Actions « evora-lightcraft-web-<tag> » contenant evora-lightcraft-web-<tag>.zip,
+# SHA256SUMS et BUILD-INFO.txt. Le nom reste celui de l'amont tant que le patch E1 (retrait des
+# marques ArtCraft) n'est pas posé.
+name: Evora web
+
+on:
+  push:
+    branches: ["evora/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evora-web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tag amont épinglé et son commit (D-19) ; la branche doit s'appeler evora/<UPSTREAM_TAG>.
+  UPSTREAM_TAG: v0.7.1
+  UPSTREAM_COMMIT: 701f78ea2e586d4748705f10fdf5c4181dc1fd49
+  # Aucun rust-toolchain(.toml) dans le dépôt : version stable exacte, celle du job « Web (wasm) »
+  # réussi de la release amont v0.7.1 (rustc 1.99.0), conforme au README amont (Rust >= 1.95).
+  RUST_VERSION: "1.99.0"
+  # Doit être égal à la version de wasm-bindgen dans Cargo.lock (cargo xtask web le vérifie).
+  WASM_BINDGEN_VERSION: "0.2.129"
+  # storytold/craft-fonts à la révision du release.yml amont au tag (« bump deliberately »).
+  CRAFT_FONTS_REV: 8dcdacd5153e64560d109541a47d806f26f048c0
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  web:
+    name: Web (wasm) Evora
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Récupération du fork
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Récupération de craft-fonts (révision épinglée)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REV }}
+          path: craft-fonts
+          persist-credentials: false
+
+      - name: Contrôle de la branche, du tag et du commit amont
+        id: meta
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            evora/*) ;;
+            *) echo "::error::branche $GITHUB_REF_NAME hors du motif evora/<tag>"; exit 1 ;;
+          esac
+          TAG="${GITHUB_REF_NAME#evora/}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag « $TAG » invalide"; exit 1
+          fi
+          if [ "$TAG" != "$UPSTREAM_TAG" ]; then
+            echo "::error::la branche vise $TAG mais UPSTREAM_TAG vaut $UPSTREAM_TAG : mettre le workflow à jour"; exit 1
+          fi
+          if ! git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD; then
+            echo "::error::$UPSTREAM_COMMIT (tag $UPSTREAM_TAG) n'est pas un ancêtre de HEAD"; exit 1
+          fi
+          VERSION="$(awk '/^\[/ { p = ($0 == "[workspace.package]"); next } p && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::Cargo.toml annonce $VERSION, incompatible avec le tag $TAG"; exit 1
+          fi
+          LOCKED_WB="$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          if [ "$LOCKED_WB" != "$WASM_BINDGEN_VERSION" ]; then
+            echo "::error::Cargo.lock fixe wasm-bindgen $LOCKED_WB, le workflow $WASM_BINDGEN_VERSION"; exit 1
+          fi
+          EVORA_COMMITS="$(git rev-list --count "$UPSTREAM_COMMIT..HEAD")"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "evora_commits=$EVORA_COMMITS"
+          } >> "$GITHUB_OUTPUT"
+          echo "branche $GITHUB_REF_NAME, tag $TAG ($UPSTREAM_COMMIT), version $VERSION, $EVORA_COMMITS commit(s) Evora"
+
+      - name: Installation de Rust (rustup, version exacte)
+        run: |
+          set -euo pipefail
+          rustup --version
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-unknown-unknown --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+          rustup target list --installed
+
+      - name: Cache du registre Cargo et des outils
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.evora-tools
+          key: evora-web-cargo-${{ runner.os }}-rust${{ env.RUST_VERSION }}-wb${{ env.WASM_BINDGEN_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            evora-web-cargo-${{ runner.os }}-rust${{ env.RUST_VERSION }}-wb${{ env.WASM_BINDGEN_VERSION }}-
+
+      - name: Cache du dossier target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: evora-web-target-${{ runner.os }}-rust${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            evora-web-target-${{ runner.os }}-rust${{ env.RUST_VERSION }}-
+
+      - name: Installation de wasm-bindgen-cli (version exacte)
+        run: |
+          set -euo pipefail
+          TOOLS="$HOME/.evora-tools"
+          have="$("$TOOLS/bin/wasm-bindgen" --version 2>/dev/null | awk '{print $2}' || true)"
+          if [ "$have" != "$WASM_BINDGEN_VERSION" ]; then
+            cargo install wasm-bindgen-cli --version "=$WASM_BINDGEN_VERSION" --locked --root "$TOOLS" --force
+          fi
+          echo "$TOOLS/bin" >> "$GITHUB_PATH"
+          "$TOOLS/bin/wasm-bindgen" --version
+
+      - name: Build web (cargo xtask web, profil web)
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+          LIGHTCRAFT_BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          export LIGHTCRAFT_BUILD_DATE="$(date -u +%Y-%m-%d)"
+          # Le dossier du site est régénéré à chaque build : rien ne survit d'un cache précédent.
+          if [ -e target/web-site ]; then mv target/web-site "$RUNNER_TEMP/web-site-from-cache"; fi
+          wasm-bindgen --version
+          cargo xtask web
+          ls -la target/web-site
+
+      - name: Empaquetage du site statique
+        id: pkg
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          EVORA_COMMITS: ${{ steps.meta.outputs.evora_commits }}
+        run: |
+          set -euo pipefail
+          SITE="target/web-site"
+          NAME="evora-lightcraft-web-$TAG"
+          OUT="$GITHUB_WORKSPACE/dist/evora"
+          WORK="$RUNNER_TEMP/evora-package"
+          [ -f "$SITE/index.html" ] || { echo "::error::$SITE/index.html absent"; exit 1; }
+          # Garde reprise de package.sh (#793) : aucun artefact Cargo dans le site.
+          for d in deps build .fingerprint; do
+            if [ -e "$SITE/$d" ]; then echo "::error::$SITE/$d présent : artefacts Cargo dans le site (#793)"; exit 1; fi
+          done
+          # Garde reprise de package.sh : URL relatives seulement (service sous un sous-chemin et en iframe).
+          if grep -Eq '(src|href)="/[^/]' "$SITE/index.html"; then
+            echo "::error::$SITE/index.html contient des URL absolues depuis la racine"; exit 1
+          fi
+          # Le site produit par xtask est plat : un sous-dossier ou un lien symbolique signale un changement amont à relire.
+          odd="$(find "$SITE" -mindepth 1 \( -type d -o -type l \) -print)"
+          if [ -n "$odd" ]; then echo "::error::structure inattendue dans $SITE :"; echo "$odd"; exit 1; fi
+          mkdir -p "$WORK/$NAME/LICENSES" "$OUT"
+          # Copie des fichiers réguliers du site, sans fichiers cachés ni fichiers d'hébergement
+          # (contrairement à package.sh, ni _headers ni .htaccess ni HOSTING.md : Evora pose ses propres en-têtes).
+          find "$SITE" -maxdepth 1 -type f ! -name '.*' ! -name '_headers' ! -name '*.conf' -exec cp {} "$WORK/$NAME/" \;
+          # Licences et mentions (logique copy_docs et copy_font_licences de packaging/env.sh, README exclu).
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE assets/ATTRIBUTION.md; do
+            if [ -f "$f" ]; then cp "$f" "$WORK/$NAME/LICENSES/"; fi
+          done
+          for lic in craft-fonts/fonts/*/OFL.txt; do
+            [ -f "$lic" ] || continue
+            cp "$lic" "$WORK/$NAME/LICENSES/OFL-$(basename "$(dirname "$lic")").txt"
+          done
+          (cd "$WORK" && zip -qr9X "$OUT/$NAME.zip" "$NAME")
+          (cd "$OUT" && sha256sum "$NAME.zip" > SHA256SUMS)
+          WASM="$WORK/$NAME/lightcraft_web_bg.wasm"
+          {
+            echo "artefact: $NAME.zip"
+            echo "fork: $GITHUB_REPOSITORY"
+            echo "branche: $GITHUB_REF_NAME"
+            echo "commit: $GITHUB_SHA"
+            echo "tag amont: $UPSTREAM_TAG"
+            echo "commit amont: $UPSTREAM_COMMIT"
+            echo "commits Evora au-dessus du tag: $EVORA_COMMITS"
+            echo "version Cargo: $VERSION"
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "wasm-bindgen: $(wasm-bindgen --version)"
+            echo "craft-fonts: $CRAFT_FONTS_REV"
+            echo "wasm-opt: $(command -v wasm-opt >/dev/null && wasm-opt --version || echo absent)"
+            echo "exécution: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (essai $GITHUB_RUN_ATTEMPT)"
+            echo "date UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "sha256 $NAME.zip: $(cut -d' ' -f1 "$OUT/SHA256SUMS")"
+            echo "sha256 lightcraft_web_bg.wasm: $(sha256sum "$WASM" | cut -d' ' -f1)"
+          } > "$OUT/BUILD-INFO.txt"
+          cat "$OUT/BUILD-INFO.txt"
+          ls -la "$OUT"
+          (cd "$WORK" && find "$NAME" -type f | sort)
+          {
+            echo "name=$NAME"
+            echo "dir=$WORK/$NAME"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Garde-fous (non bloquants, résumé du job)
+        continue-on-error: true
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+          PKG: ${{ steps.pkg.outputs.dir }}
+        run: |
+          set -uo pipefail
+          SITE="target/web-site"
+          S="$GITHUB_STEP_SUMMARY"
+          hosting_files() { find "$1" \( -name '_headers' -o -name '.htaccess' -o -name '*.conf' \) -print | sort; }
+          count_term() { # $1 terme, $2.. fichiers ; occurrences exactes, binaires compris
+            local term="$1"; shift; local n=0 f c
+            for f in "$@"; do c="$(grep -a -o -F -- "$term" "$f" | wc -l)"; n=$((n + c)); done
+            echo "$n"
+          }
+          # Auto-tests : chaque garde doit savoir rougir sur un échantillon piégé.
+          T="$RUNNER_TEMP/evora-guard-selftest"; mkdir -p "$T"
+          : > "$T/_headers"; : > "$T/.htaccess"; : > "$T/site.conf"; printf 'ArtCraft x ArtCraft\n' > "$T/b.js"
+          st_host="$(hosting_files "$T" | wc -l)"; st_brand="$(count_term ArtCraft "$T/b.js")"
+          [ "$st_host" = 3 ] && st_host_ok=OK || st_host_ok="ÉCHEC ($st_host/3)"
+          [ "$st_brand" = 2 ] && st_brand_ok=OK || st_brand_ok="ÉCHEC ($st_brand/2)"
+          mapfile -t files < <(find "$PKG" -type f ! -path "$PKG/LICENSES/*" ! -name '*.gz' ! -name '*.br' | sort)
+          mapfile -t lic < <(find "$PKG/LICENSES" -type f | sort)
+          {
+            echo "## Evora : garde-fous du bundle $NAME"
+            echo
+            echo "Non bloquants pour cette première passe. Auto-test hébergement : $st_host_ok ; auto-test marques : $st_brand_ok."
+            echo
+            echo "### Fichiers d'hébergement (_headers, .htaccess, *.conf)"
+            echo
+            echo "| Emplacement | Nombre | Fichiers |"
+            echo "|---|---|---|"
+            h1="$(hosting_files "$SITE")"; h2="$(hosting_files "$PKG")"
+            echo "| Sortie brute de xtask (target/web-site) | $(printf '%s' "$h1" | grep -c . || true) | ${h1:-aucun} |"
+            echo "| Archive Evora | $(printf '%s' "$h2" | grep -c . || true) | ${h2:-aucun} |"
+            echo
+            echo "### Taille"
+            echo
+            echo "| Fichier | Octets |"
+            echo "|---|---|"
+            for f in lightcraft_web_bg.wasm lightcraft_web_bg.wasm.gz lightcraft_web_bg.wasm.br lightcraft_web.js lightcraft_zh_hans.otf; do
+              [ -f "$PKG/$f" ] && echo "| $f | $(stat -c %s "$PKG/$f") |"
+            done
+            echo "| $NAME.zip | $(stat -c %s "dist/evora/$NAME.zip") |"
+            echo
+            echo "### Marques (mesure de la future cible E1)"
+            echo
+            echo "Occurrences exactes, hors copies .gz/.br ; le dossier LICENSES/ est compté à part (la mention en texte simple y est permise)."
+            echo
+            echo "| Terme | Bundle | LICENSES/ |"
+            echo "|---|---|---|"
+            for term in ArtCraft LightCraft getartcraft discord.gg; do
+              echo "| $term | $(count_term "$term" "${files[@]}") | $(count_term "$term" "${lic[@]}") |"
+            done
+            echo
+            echo "Détail ArtCraft par fichier :"
+            echo
+            for f in "${files[@]}"; do
+              c="$(count_term ArtCraft "$f")"; [ "$c" -gt 0 ] && echo "- ${f#$PKG/} : $c"
+            done
+            echo
+            echo "### Empreintes"
+            echo
+            echo '```'
+            cat dist/evora/SHA256SUMS
+            echo '```'
+          } >> "$S"
+          cat "$S"
+
+      - name: Dépôt de l'artefact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: dist/evora/
+          if-no-files-found: error
