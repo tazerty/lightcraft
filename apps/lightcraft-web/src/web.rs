@@ -229,10 +229,9 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         log_file: None,
         open_with: None,
         check_editor: None,
-        open_url: Some(Box::new(|url: &str| {
-            let w = web_sys::window().ok_or("no window")?;
-            w.open_with_url_and_target(url, "_blank").map(|_| ()).map_err(|_| "the browser blocked the new tab".to_string())
-        })),
+        // Evora (E7): the engine opens no third-party page (help, feedback, source, map, model and
+        // contributor pages); the links stay inert until the host bridge (E4) decides what to offer.
+        open_url: None,
         pick_folder: None,
         // the browser reports prefers-color-scheme to egui
         system_theme: None,
