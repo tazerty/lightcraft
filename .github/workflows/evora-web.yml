@@ -177,10 +177,10 @@ jobs:
           node .github/evora/catalog-audit.mjs --selftest
           node .github/evora/advisory-guards.mjs --selftest
 
-      - name: Porte E10 — émojis des catalogues affichés et du code d'interface
+      - name: Portes E10 et E9 — émojis et termes sensibles des catalogues affichés
         id: g_emoji
         continue-on-error: true
-        run: node .github/evora/catalog-audit.mjs . --rust-blocking --summary "$GITHUB_STEP_SUMMARY"
+        run: node .github/evora/catalog-audit.mjs . --rust-blocking --terms-blocking --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Porte cargo-deny — licences, avis de sécurité, sources
         id: g_deny
@@ -326,13 +326,13 @@ jobs:
           if [ "$code" -eq 0 ]; then echo "::error::le test de fumée n'a pas rougi sous sabotage CSP : instrument aveugle"; exit 1; fi
           echo "Sabotage CSP : le test de fumée a bien échoué (code $code)."
 
-      - name: Porte test de fumée — Chrome sans interface, iframe d'une autre origine, audit de rendu E10
+      - name: Porte test de fumée — Chrome sans interface, iframe d'une autre origine, audit de rendu E10 et E9
         id: g_smoke
         continue-on-error: true
         run: |
           set -euo pipefail
           node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/smoke" --timeout 150 \
-            --render-audit --repo "$GITHUB_WORKSPACE" \
+            --render-audit --terms-blocking --repo "$GITHUB_WORKSPACE" \
             | tee "$RUNNER_TEMP/evora-diag/smoke.txt"
 
       - name: Verdict des portes
@@ -351,12 +351,12 @@ jobs:
             echo
             echo "| Porte | Résultat |"
             echo "|---|---|"
-            echo "| E10 émojis (catalogues et code d'interface) | $EMOJI |"
+            echo "| E10 émojis et E9 termes sensibles (catalogues affichés, code d'interface) | $EMOJI |"
             echo "| cargo-deny (licences, avis, sources) | $DENY |"
             echo "| cargo-about (LICENSES/ des crates) | $ABOUT |"
             echo "| Bundle (marques, hébergement, .gz/.br, CSP, taille) | $BUNDLE |"
             echo "| Sabotage CSP du test de fumée (doit rougir) | $SABOTAGE |"
-            echo "| Test de fumée (autre origine, démarrage à froid, audit de rendu E10) | $SMOKE |"
+            echo "| Test de fumée (autre origine, démarrage à froid, audit de rendu E10 et E9) | $SMOKE |"
             echo
             echo "Avertissements de cargo-deny : $(awk '/^warning/ { n++ } END { print n + 0 }' "$RUNNER_TEMP/cargo-deny.txt" 2>/dev/null || echo '?') (détail dans le journal de la porte)."
           } >> "$GITHUB_STEP_SUMMARY"

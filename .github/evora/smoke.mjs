@@ -29,12 +29,8 @@ import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import { auditRust, isEmoji } from './catalog-audit.mjs';
+import { auditRust, isEmoji, SENSITIVE_TERMS, INFO_TERMS } from './catalog-audit.mjs';
 
-// Termes sensibles (D-16, patch E9) recherchés dans les messages affichés.
-export const SENSITIVE_TERMS = ['Lumetri', 'Lightroom', 'Acrobat', 'Premiere', 'Adobe', 'Cycore'];
-// Relevés pour information seulement (UPSTREAM.md §5, selon D-16).
-const INFO_TERMS = ['Apple Photos'];
 // Émojis témoins : la police de l'interface ne doit pas pouvoir les peindre en émoji.
 const EMOJI_SAMPLES = '\u{1F600}\u2705\u274C\u2B50\u26A1\u{1F50D}\u{1F4C1}\u{1F5D1}\u26A0\u2714\u2716';
 

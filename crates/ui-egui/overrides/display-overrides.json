@@ -1,0 +1,44 @@
+{
+  "_doc": [
+    "Evora (patch E9, D-16) : catalogue de surcharge d'affichage de l'interface, appliqué à tout message affiché, dans toutes les langues, anglais compris, sans toucher aux crates moteur.",
+    "« messages » : surcharges de message entier, par texte source anglais puis par code de langue ; prioritaires.",
+    "« replace » : remplacements de sous-chaînes, dans l'ordre, sur le texte affiché (traduction ou source anglaise).",
+    "Les messages de tr() sont surchargés à l'exécution (i18n.rs), ceux de tr_format! à la compilation (build.rs), avec ce même fichier.",
+    "Termes neutres provisoires, à valider avec la revue juridique (D-16) : LRCAT (format du catalogue importé), opRGB (nom normalisé CEI 61966-2-5 de l'espace Adobe RGB (1998))."
+  ],
+  "replace": [
+    ["Lightroom Classic", "LRCAT"],
+    ["Lightroom", "LRCAT"],
+    ["Adobe RGB (1998)", "opRGB"],
+    ["Adobe RGB", "opRGB"]
+  ],
+  "messages": {
+    "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": {
+      "en": "This is an LRCAT catalog, not a LightCraft library. Import it into a LightCraft library instead?"
+    },
+    "Face names written to XMP by Lightroom and other apps show up here.": {
+      "en": "Face names written to XMP by other photo apps show up here.",
+      "de": "Gesichtsnamen, die andere Foto-Apps in XMP schreiben, erscheinen hier.",
+      "es": "Aquí aparecen los nombres de caras escritos en XMP por otras aplicaciones de fotos.",
+      "fr": "Les noms de visages écrits dans XMP par d'autres applications photo apparaissent ici.",
+      "ja": "他の写真アプリが XMP に書き込んだ顔の名前がここに表示されます",
+      "pt-br": "Nomes de rostos gravados no XMP por outros aplicativos de fotos aparecem aqui.",
+      "ru": "Имена лиц, записанные в XMP другими фотоприложениями, появляются здесь.",
+      "uk": "Імена облич, записані до XMP іншими фотозастосунками, з’являються тут.",
+      "zh-hans": "其他照片应用写入 XMP 的人脸名称会显示在这里。",
+      "zh-hant": "其他照片應用程式寫入 XMP 的臉部名稱會顯示在這裡。"
+    },
+    "XMP profile \"{profile}\" was not applied for {path}; colors may differ from Lightroom.": {
+      "en": "XMP profile \"{profile}\" was not applied for {path}; colors may differ from the app that wrote it.",
+      "de": "XMP-Profil \"{profile}\" wurde für {path} nicht angewendet; Farben können von der Anwendung abweichen, die es geschrieben hat.",
+      "es": "El perfil XMP \"{profile}\" no se aplicó a {path}; los colores pueden diferir de la aplicación que lo escribió.",
+      "fr": "Le profil XMP « {profile} » n’a pas été appliqué à {path} ; les couleurs peuvent différer de celles de l’application qui l’a écrit.",
+      "ja": "{path} に XMP プロファイル \"{profile}\" を適用できませんでした。色は書き込んだアプリと異なる場合があります。",
+      "pt-br": "O perfil XMP \"{profile}\" não foi aplicado a {path}; as cores podem diferir do aplicativo que o gravou.",
+      "ru": "Профиль XMP \"{profile}\" не применён к {path}; цвета могут отличаться от приложения, которое его записало.",
+      "uk": "Профіль XMP «{profile}» не застосовано до {path}; кольори можуть відрізнятися від застосунку, який його записав.",
+      "zh-hans": "未对 {path} 应用 XMP 配置文件“{profile}”；颜色可能与写入它的应用不同。",
+      "zh-hant": "未將 XMP 描述檔「{profile}」套用至 {path}；色彩可能與寫入它的應用程式不同。"
+    }
+  }
+}

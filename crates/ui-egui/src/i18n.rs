@@ -175,7 +175,7 @@ pub fn tr(source: &str) -> &str {
 /// where its shared translation reads wrongly there (Japanese はい / いいえ as a rule's value).
 fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
     match language.catalog().get(&format!("{context}|{source}")) {
-        Some(translation) => translation.as_str(),
+        Some(translation) => display_override(translation.as_str()),
         None => tr_in(language, source),
     }
 }
@@ -183,15 +183,84 @@ fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
 /// Catalog values are `'static` (they live in the embedded file), so a translation can be handed
 /// out for as long as the `'static` key it was looked up by.
 fn tr_in(language: Locale, source: &str) -> &str {
+    if let Some(text) = message_override(language, source) {
+        return text;
+    }
     if language.catalog().is_empty() {
-        return source;
+        return display_override(source);
     }
     thread_local! {
         static VERBATIM: RefCell<BTreeMap<Locale, BTreeMap<String, &'static str>>> = const { RefCell::new(BTreeMap::new()) };
     }
     VERBATIM.with_borrow_mut(|cache| {
         let verbatim = cache.entry(language).or_insert_with(|| catalog_verbatim(language));
-        verbatim.get(source).copied().unwrap_or(source)
+        display_override(verbatim.get(source).copied().unwrap_or(source))
+    })
+}
+
+/// Evora (E9, D-16): the display-override catalog (`overrides/display-overrides.json`), applied to
+/// every message the UI displays, in every language, English included, without touching the
+/// engine crates: whole-message overrides keyed by the English source (`messages`), then
+/// substring replacements in order (`replace`). `tr_format!` messages get the same treatment when
+/// `build.rs` compiles them, from the same file.
+struct DisplayOverrides {
+    replace: Vec<(String, String)>,
+    messages: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+fn display_overrides() -> &'static DisplayOverrides {
+    static OVERRIDES: OnceLock<DisplayOverrides> = OnceLock::new();
+    OVERRIDES.get_or_init(|| {
+        // A malformed file logs and applies nothing: the UI keeps its own text, it never fails.
+        let parsed: serde_json::Value = serde_json::from_str(include_str!("../overrides/display-overrides.json")).unwrap_or_else(|error| {
+            log::error!("Invalid display-override catalog: {error}");
+            serde_json::Value::Null
+        });
+        let replace: Vec<(String, String)> = parsed["replace"]
+            .as_array()
+            .map(|rules| rules.iter().filter_map(|rule| Some((rule[0].as_str()?.to_string(), rule[1].as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+        let messages: BTreeMap<String, BTreeMap<String, String>> = parsed["messages"]
+            .as_object()
+            .map(|all| {
+                all.iter()
+                    .map(|(source, texts)| {
+                        let texts: Option<BTreeMap<String, String>> = texts.as_object().map(|texts| {
+                            texts.iter().filter_map(|(code, text)| Some((code.clone(), text.as_str()?.to_string()))).collect()
+                        });
+                        (source.clone(), texts.unwrap_or_default())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        DisplayOverrides { replace, messages }
+    })
+}
+
+/// The whole-message override of `source` in `language`, if the override catalog has one.
+fn message_override(language: Locale, source: &str) -> Option<&'static str> {
+    display_overrides().messages.get(source)?.get(language.code()).map(String::as_str)
+}
+
+/// `text` as displayed: the override catalog's replacements applied. Text without a listed term is
+/// returned as it is; a replaced text is built once and kept for the session (display labels
+/// only: [`tr`] is never called on user text).
+fn display_override(text: &str) -> &str {
+    let replace = &display_overrides().replace;
+    if !replace.iter().any(|(from, _)| text.contains(from.as_str())) {
+        return text;
+    }
+    thread_local! {
+        static REPLACED: RefCell<BTreeMap<String, &'static str>> = const { RefCell::new(BTreeMap::new()) };
+    }
+    REPLACED.with_borrow_mut(|cache| {
+        if let Some(done) = cache.get(text) {
+            return *done;
+        }
+        let shown = replace.iter().fold(text.to_string(), |shown, (from, to)| shown.replace(from.as_str(), to));
+        let shown: &'static str = Box::leak(shown.into_boxed_str());
+        cache.insert(text.to_string(), shown);
+        shown
     })
 }
 
