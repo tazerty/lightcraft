@@ -2,7 +2,7 @@
 # Evora — configuration de cargo-deny pour l'artefact web (crate apps/lightcraft-web, cible wasm32).
 # L'amont n'a pas de deny.toml : celui-ci est minimal et ne relâche aucun niveau par défaut de
 # cargo-deny ; toute exception y est nommée, avec sa raison. Lancé par .github/workflows/evora-web.yml :
-#   cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --locked check --config .github/evora/deny.toml advisories licenses sources
+#   cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --config .github/evora/deny.toml --locked check advisories licenses sources
 
 [graph]
 # Le graphe de ce qui est réellement livré : la crate web pour la cible du navigateur, sans les
@@ -31,7 +31,14 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.8
-exceptions = []
+exceptions = [
+    # Polices embarquées par egui (Ubuntu-Light, Hack, Noto Emoji, emoji-icon-font) : licences de
+    # polices permissives ; leurs textes sont publiés dans LICENSES/THIRD-PARTY-LICENSES.txt.
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # Encodeur JPEG en partie dérivé de la libjpeg de l'Independent JPEG Group : licence IJG
+    # (permissive, mention exigée dans la documentation : faite par LICENSES/THIRD-PARTY-LICENSES.txt).
+    { crate = "jpeg-encoder", allow = ["IJG"] },
+]
 
 [sources]
 # Seuls crates.io et la dépendance git épinglée de l'amont (storytold/craft-libs, révision du Cargo.lock).
