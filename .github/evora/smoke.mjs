@@ -15,7 +15,7 @@
 // action tierce, seulement les modules intégrés de Node et le Chrome préinstallé du runner.
 //
 // Usage : node smoke.mjs --site <dossier> --out <dossier> [--chrome <binaire>] [--timeout <s>]
-//                        [--scenario nom=requête]... [--sabotage-csp]
+//                        [--scenario 'nom|requête|langue attendue']... [--sabotage-csp]
 //                        [--render-audit --repo <dépôt>] [--terms-blocking]
 // --render-audit appelle la commande web.renderAudit du module (patch E10) dans le dernier scénario
 // prêt et juge le rendu : aucune face d'émoji dans les familles de l'interface, aucun émoji dans les
@@ -44,9 +44,17 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     const v = argv[i + 1];
-    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--scenario') { const [n, q] = v.split('='); o.scenarios.push({ name: n, query: q || '' }); i += 1; }
+    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--scenario') { const [n, q, l] = v.split('|'); o.scenarios.push({ name: n, query: q || '', lang: l || undefined }); i += 1; }
   }
-  if (o.scenarios.length === 0) o.scenarios = [{ name: 'defaut', query: '' }, { name: 'memoire', query: '?store=memory' }];
+  // E3 : langue imposée par ?lang= (codes d'Evora), vérifiée par web.stats.language ; pt sans variante (D-23) reste en anglais.
+  if (o.scenarios.length === 0) {
+    o.scenarios = [
+      { name: 'defaut', query: '', lang: 'en' },
+      { name: 'memoire-zh-Hans', query: '?store=memory&lang=zh-Hans', lang: 'zh-hans' },
+      { name: 'pt-sans-variante', query: '?store=memory&lang=pt', lang: 'en' },
+      { name: 'francais', query: '?store=memory&lang=fr', lang: 'fr' },
+    ];
+  }
   return o;
 }
 
@@ -155,7 +163,7 @@ async function scenario(opts, chrome, sc, cspHashes) {
       'Content-Security-Policy': `default-src 'none'; frame-src ${engineOrigin}; style-src 'unsafe-inline'; img-src data:` });
     res.end(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Evora : hôte de test</title><link rel="icon" href="data:,">
 <style>html,body{margin:0;height:100%;background:#fff}iframe{border:0;width:100%;height:100%;display:block}</style></head>
-<body><iframe id="engine" src="${engineUrl}" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-modals"
+<body><iframe id="engine" src="${engineUrl.replaceAll('&', '&amp;')}" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-modals"
 allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></body></html>`);
   });
 
@@ -267,6 +275,8 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   result.warnings = warnings;
   result.appLog = appLog.slice(0, 40);
   result.crossOrigin = !!result.last?.origin && result.last.origin === engineOrigin && engineOrigin !== parentOrigin;
+  result.language = result.last?.stats?.language;
+  if (sc.lang && result.last?.ready && result.language !== sc.lang) errors.push(`langue de l'interface ${result.language}, attendue ${sc.lang} (E3)`);
   result.ok = !!result.last?.ready && errors.length === 0 && result.crossOrigin && result.targets?.includes('iframe');
   if (!result.ok) result.chromeStderr = stderr.split('\n').slice(-30);
   return result;
@@ -333,7 +343,7 @@ async function main() {
     const s = r.last || {};
     console.log(`\n== Scénario ${r.scenario} : ${r.ok ? 'OK' : 'ÉCHEC'} (${r.browser || 'navigateur ?'})`);
     console.log(`page parente ${r.parentOrigin} -> iframe ${r.engineUrl} (origine ${s.origin || '?'}, ${r.crossOrigin ? 'origine différente confirmée' : 'origine NON confirmée'})`);
-    console.log(`cibles attachées : ${(r.targets || []).join(', ')} ; WebGL2 : ${r.webgl2 || '?'}`);
+    console.log(`cibles attachées : ${(r.targets || []).join(', ')} ; WebGL2 : ${r.webgl2 || '?'} ; langue de l'interface : ${r.language ?? '?'}${sc.lang ? ` (attendue ${sc.lang})` : ''}`);
     console.log(`démarrage à froid : prêt à ${s.tReady ? Math.round(s.tReady) : '?'} ms après la navigation de l'iframe (performance.now), ${r.wallMs} ms d'horloge depuis la navigation de la page parente ; première frame UI annoncée par l'app : ${r.appFirstFrameMs ?? '?'} ms`);
     console.log(`état final : canvas ${s.w}x${s.h}, chargement retiré ${s.loading === false}, API ${s.api}, web.stats ${s.stats ? JSON.stringify(s.stats) : 'absent'}${s.probeError ? `, erreur de sonde ${s.probeError}` : ''}${s.status ? `, statut « ${s.status} »` : ''}`);
     for (const e of r.errors) console.log(`ERREUR ${e}`);
