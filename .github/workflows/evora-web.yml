@@ -176,6 +176,7 @@ jobs:
           node .github/evora/bundle-gates.mjs selftest
           node .github/evora/catalog-audit.mjs --selftest
           node .github/evora/advisory-guards.mjs --selftest
+          node .github/evora/feature-guards.mjs --selftest
 
       - name: Portes E10 et E9 — émojis et termes sensibles des catalogues affichés
         id: g_emoji
@@ -191,6 +192,15 @@ jobs:
           node .github/evora/advisory-guards.mjs .
           cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --config .github/evora/deny.toml --locked --color never \
             check --show-stats advisories licenses sources 2>&1 | tee "$RUNNER_TEMP/cargo-deny.txt"
+
+      - name: Porte E7 — neutralisations du graphe web (HEIF, SAM 3, débruitage IA, RawNIND)
+        id: g_e7
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Résolution des features du seul paquet web pour la cible du navigateur, comme le build.
+          cargo tree -p lightcraft-web --target wasm32-unknown-unknown -e normal,features --prefix none --locked > "$RUNNER_TEMP/web-tree.txt"
+          node .github/evora/feature-guards.mjs "$RUNNER_TEMP/web-tree.txt"
 
       - name: Porte cargo-about — LICENSES/ des crates tierces
         id: g_about
@@ -340,6 +350,7 @@ jobs:
         env:
           EMOJI: ${{ steps.g_emoji.outcome }}
           DENY: ${{ steps.g_deny.outcome }}
+          E7: ${{ steps.g_e7.outcome }}
           ABOUT: ${{ steps.g_about.outcome }}
           BUNDLE: ${{ steps.g_bundle.outcome }}
           SABOTAGE: ${{ steps.g_smoke_sabotage.outcome }}
@@ -353,6 +364,7 @@ jobs:
             echo "|---|---|"
             echo "| E10 émojis et E9 termes sensibles (catalogues affichés, code d'interface) | $EMOJI |"
             echo "| cargo-deny (licences, avis, sources) | $DENY |"
+            echo "| E7 neutralisations du graphe web | $E7 |"
             echo "| cargo-about (LICENSES/ des crates) | $ABOUT |"
             echo "| Bundle (marques, hébergement, .gz/.br, CSP, taille) | $BUNDLE |"
             echo "| Sabotage CSP du test de fumée (doit rougir) | $SABOTAGE |"
@@ -360,7 +372,7 @@ jobs:
             echo
             echo "Avertissements de cargo-deny : $(awk '/^warning/ { n++ } END { print n + 0 }' "$RUNNER_TEMP/cargo-deny.txt" 2>/dev/null || echo '?') (détail dans le journal de la porte)."
           } >> "$GITHUB_STEP_SUMMARY"
-          for v in "$EMOJI" "$DENY" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE"; do
+          for v in "$EMOJI" "$DENY" "$E7" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE"; do
             if [ "$v" != "success" ]; then echo "::error::au moins une porte est rouge : voir le résumé du job"; exit 1; fi
           done
           echo "Toutes les portes sont vertes."
