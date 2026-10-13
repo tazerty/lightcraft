@@ -272,6 +272,9 @@ jobs:
           else
             echo "::warning::THIRD-PARTY-LICENSES.txt absent (porte cargo-about en échec)"
           fi
+          # E4 : origines parentes admises par le pont EHP (?host=evora). Vide dans l'artefact : le
+          # provisionnement d'Evora l'écrit depuis engines.json (HOST-PROTOCOL §2.3) ; vide, le pont reste muet.
+          printf '{"parentOrigins": []}\n' > "$WORK/$NAME/evora-host.json"
           # Empreintes CSP des scripts inline, écrites dans le bundle avant l'archive (un problème relevé
           # ici est jugé par la porte du bundle, qui tourne quoi qu'il arrive).
           node .github/evora/bundle-gates.mjs csp "$WORK/$NAME" || echo "::warning::empreintes CSP : problème relevé, voir la porte du bundle"
