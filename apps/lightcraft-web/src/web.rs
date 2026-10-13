@@ -1,13 +1,17 @@
 //! Browser host: opens the library in browser storage, starts the render workers and eframe on
 //! `<canvas id="lightcraft_canvas">`, wires the file picker and drag-and-drop, and turns exports
 //! into downloads.
+//!
+//! Evora (E4): with `?host=evora` the page is the engine of Evora's Revela. It speaks the Evora host
+//! protocol with the parent page `evora-host.json` admits ([`crate::ehp`]) and opens the photos the
+//! host sends as bytes.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lightcraft_engine::Session;
-use lightcraft_engine::catalog::Source;
+use lightcraft_engine::catalog::{PhotoId, Source};
+use lightcraft_engine::{Selection, Session};
 use lightcraft_engine::library::LibraryStores;
 use lightcraft_ui_egui::{LightcraftApp, Services, UiState};
 use serde_json::json;
@@ -19,7 +23,7 @@ use crate::backup::{ACTIVE_LIBRARY, DEFAULT_LIBRARY_DIR, valid_library_dir};
 use crate::bench::Bench;
 use crate::files::{Files, FlushOp, LIBRARY_FILES};
 use crate::safety::{self, notice};
-use crate::store::{Originals, content_hash, download_name, storage_key};
+use crate::store::{Originals, content_hash, download_name, original_path, storage_key};
 use crate::wire::ThumbIndex;
 use crate::workers::{THUMB_INDEX, Workers};
 
@@ -74,7 +78,7 @@ pub(crate) fn request_repaint() {
     });
 }
 
-/// URL options (`?bench&store=idb&workers=2&reset&lang=fr`).
+/// URL options (`?bench&store=idb&workers=2&reset&lang=fr&theme=dark&host=evora`).
 struct Options {
     bench: bool,
     /// "opfs" (default: OPFS, falling back to IndexedDB), "idb" or "memory".
@@ -88,6 +92,8 @@ struct Options {
     storage_ns: Option<String>,
     /// Evora (E2): `light` or `dark`, Evora's identity in that appearance (`?theme=`).
     theme: Option<String>,
+    /// Evora (E4): `?host=evora`, the host bridge speaks EHP v1 ([`crate::ehp`]).
+    host: bool,
 }
 
 impl Options {
@@ -111,6 +117,7 @@ impl Options {
             lang: get("lang").filter(|v| !v.is_empty() && v.len() <= 35),
             storage_ns: get("storageNs"),
             theme: get("theme"),
+            host: get("host").as_deref() == Some("evora"),
         }
     }
 }
@@ -514,6 +521,10 @@ impl WebApp {
         });
         if let Some(w) = &workers {
             app.renderer.set_offload(Box::new(w.clone()));
+            // Evora (E4): under the host (memory mode) the workers get the originals from the page
+            if opts.host {
+                w.set_memory_originals(originals.clone());
+            }
         }
         log::info!("lightcraft: {n} render workers");
         CTX.with(|c| *c.borrow_mut() = Some(cc.egui_ctx.clone()));
@@ -675,12 +686,81 @@ impl WebApp {
         json!({"purging": true, "storage": kind})
     }
 
+    /// Evora (E4): the host's requests (EHP), applied on this frame in arrival order, each answered
+    /// once applied.
+    fn host_requests(&mut self, ctx: &egui::Context) {
+        use crate::ehp::{HostEvent, ack};
+        while let Some(event) = crate::ehp::next_event() {
+            match event {
+                HostEvent::Init { id, lang, dark } => {
+                    self.set_host_language(lang.as_deref());
+                    self.set_host_theme(ctx, dark);
+                    ack(&id, true, None);
+                }
+                HostEvent::Lang { id, lang } => {
+                    self.set_host_language(lang.as_deref());
+                    ack(&id, true, None);
+                }
+                HostEvent::Theme { id, dark } => {
+                    self.set_host_theme(ctx, dark);
+                    ack(&id, true, None);
+                }
+                HostEvent::Open { id, doc_ref, name, bytes } => match self.open_bytes(&name, bytes) {
+                    Ok(photo) => {
+                        log::info!("lightcraft: {name} opened from the host (docRef {doc_ref}, photo {photo})");
+                        ack(&id, true, None);
+                    }
+                    Err((code, e)) => {
+                        log::warn!("lightcraft: {name} from the host was not opened: {e}");
+                        ack(&id, false, Some(code));
+                    }
+                },
+            }
+        }
+    }
+
+    /// Evora (E3 through E4): the engine's language for the host's tag (`None`: English).
+    fn set_host_language(&mut self, tag: Option<&str>) {
+        self.app.ui.language = tag.map_or(lightcraft_ui_egui::i18n::Locale::En, host_language);
+    }
+
+    /// Evora (E2 through E4): Evora's identity, light or dark; restyled now, since the palette can
+    /// change while the theme kind doesn't.
+    fn set_host_theme(&mut self, ctx: &egui::Context, dark: bool) {
+        use lightcraft_ui_egui::state::AppearanceMode;
+        lightcraft_ui_egui::theme::set_evora_palette(true);
+        self.app.ui.settings.appearance_mode = if dark { AppearanceMode::Dark } else { AppearanceMode::Light };
+        lightcraft_ui_egui::theme::apply_kind(ctx, self.app.ui.settings.theme(None));
+    }
+
+    /// Evora (E4, `evora:open`; the in-crate counterpart of REV-01's `import_bytes`): import a
+    /// photo the host sends as bytes, kept in memory only, and make it the active photo. Returns
+    /// its id, or the EHP code and the reason it wasn't opened.
+    fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<u64, (&'static str, String)> {
+        let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        if ext.is_empty() || !ACCEPT.split(',').any(|a| a.trim_start_matches('.') == ext) {
+            return Err(("unsupported", format!("not a format this engine opens ({ACCEPT})")));
+        }
+        let hash = content_hash(&bytes);
+        let path = original_path(&hash, name);
+        self.originals.insert(&hash, Arc::from(bytes));
+        let report = self.app.run("library.import", json!({"paths": [path]})).map_err(|e| ("invalid_content", e))?;
+        let first = |k: &str| report[k].as_array().and_then(|a| a.first()).and_then(serde_json::Value::as_u64);
+        let id = first("imported")
+            .or_else(|| first("restored"))
+            .or_else(|| report["duplicates"].as_array().and_then(|a| a.first()).and_then(|d| d["existing"].as_u64()))
+            .ok_or_else(|| ("invalid_content", format!("not imported: {report}")))?;
+        self.app.session.selection = Selection::single(PhotoId(id));
+        Ok(id)
+    }
+
     fn web_stats(&self) -> serde_json::Value {
         // the theme the app shows (E2), worked out from its settings as `sync_theme` does
         let theme = self.app.ui.settings.theme(None);
         let accent = lightcraft_ui_egui::theme::Tokens::for_kind(theme).accent;
         let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
         let (orig_n, orig_bytes) = self.originals.usage();
+        let active = self.app.session.selection.active;
         json!({
             "language": self.app.ui.language,
             "theme": {
@@ -690,6 +770,12 @@ impl WebApp {
             },
             "namespace": self.storage_ns,
             "storage": self.backend.as_ref().map_or("memory", |b| b.kind()),
+            // Evora (E4): the photos in the session, and the active one (`evora:open`): its name,
+            // whether its thumbnail is rendered, and why it failed if it did
+            "photos": self.app.session.catalog.len(),
+            "active": active.and_then(|id| self.app.session.catalog.photo(id)).map(|p| p.file_name.clone()),
+            "activeThumb": active.is_some_and(|id| self.app.renderer.thumb(id).is_some()),
+            "activeFailure": active.and_then(|id| self.app.renderer.failure(lightcraft_ui_egui::render::Slot::Thumb(id))),
             "library": self.lib_dir,
             "dirty": self.files.is_dirty(),
             "flushing": self.flushing.get(),
@@ -795,6 +881,7 @@ impl eframe::App for WebApp {
             self.app.ui.toast = Some((text, now + NOTICE_SECS, None));
         }
         self.run_inbox(ctx);
+        self.host_requests(ctx);
         self.import_dropped(ctx);
         self.load_originals(ctx);
         if let Some(w) = &self.workers {
@@ -842,6 +929,17 @@ pub fn start(chinese_font: Vec<u8>) {
         log::warn!("lightcraft: no Simplified Chinese font supplied; Chinese-only glyphs will show as boxes");
     }
     let opts = Options::from_url();
+    let host = opts.host;
+    if host {
+        // Evora (E4): `evora:ready` goes out as soon as the bridge listens
+        crate::ehp::connect();
+        // a panic ends the module (`panic = "abort"`): the host hears `evora:failed {code: panic}`
+        let shown = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            crate::ehp::report_failure("panic");
+            shown(info);
+        }));
+    }
     wasm_bindgen_futures::spawn_local(async move {
         // one tab per library: two would each keep their own copy and overwrite each other's saves
         if opts.store != "memory" && safety::acquire_tab_lock(&safety::tab_lock_name(opts.storage_ns.as_deref())).await == Some(false) {
@@ -857,6 +955,9 @@ pub fn start(chinese_font: Vec<u8>) {
             .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
         else {
             log::error!("missing <canvas id=\"lightcraft_canvas\">");
+            if host {
+                crate::ehp::report_failure("init");
+            }
             return;
         };
         let boot = boot(opts).await;
@@ -871,6 +972,9 @@ pub fn start(chinese_font: Vec<u8>) {
             Err(e) => {
                 log::error!("LightCraft failed to start: {e:?}");
                 set_status(&format!("LightCraft failed to start: {e:?}"));
+                if host {
+                    crate::ehp::report_failure(if format!("{e:?}").contains("WebGL") { "no_webgl2" } else { "init" });
+                }
             }
         }
     });
