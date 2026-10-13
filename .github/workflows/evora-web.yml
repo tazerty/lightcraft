@@ -43,6 +43,10 @@ jobs:
     name: Web (wasm) Evora
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    defaults:
+      run:
+        # Shell explicite : « bash --noprofile --norc -eo pipefail {0} » (le défaut implicite est « bash -e », sans pipefail).
+        shell: bash
     steps:
       - name: Récupération du fork
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,6 +223,9 @@ jobs:
           NAME: ${{ steps.pkg.outputs.name }}
           PKG: ${{ steps.pkg.outputs.dir }}
         run: |
+          # Mesure, pas porte : -e est retiré pour qu'un échec ponctuel (grep sans résultat sous pipefail,
+          # fichier absent) ne tronque pas le résumé ; la ligne de fin prouve que le résumé est complet.
+          set +e
           set -uo pipefail
           SITE="target/web-site"
           S="$GITHUB_STEP_SUMMARY"
@@ -279,6 +286,8 @@ jobs:
             echo '```'
             cat dist/evora/SHA256SUMS
             echo '```'
+            echo
+            echo "Fin du résumé des garde-fous (résumé complet)."
           } >> "$S"
           cat "$S"
 
