@@ -175,6 +175,7 @@ jobs:
           set -euo pipefail
           node .github/evora/bundle-gates.mjs selftest
           node .github/evora/catalog-audit.mjs --selftest
+          node .github/evora/advisory-guards.mjs --selftest
 
       - name: Porte E10 — émojis des catalogues affichés
         id: g_emoji
@@ -186,6 +187,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # Les avis ignorés dans deny.toml ne le sont qu'à la condition revérifiée ici.
+          node .github/evora/advisory-guards.mjs .
           cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --config .github/evora/deny.toml --locked --color never \
             check --show-stats advisories licenses sources 2>&1 | tee "$RUNNER_TEMP/cargo-deny.txt"
 

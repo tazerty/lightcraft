@@ -14,8 +14,14 @@ exclude-dev = true
 
 [advisories]
 # Valeurs par défaut de cargo-deny (vulnérabilités, avis « unmaintained » sur tout le graphe) :
-# aucune n'est relâchée, aucun avis n'est ignoré.
-ignore = []
+# aucune n'est relâchée. Chaque avis ignoré est nommé avec sa raison ; les deux avis quick-xml ne le
+# sont que parce que .github/evora/advisory-guards.mjs prouve, à chaque exécution et juste avant
+# cargo-deny, que le chemin vulnérable n'est pas emprunté.
+ignore = [
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38.4 (lightcraft-meta, lightcraft-lensdb) : seuls attributes() avec contrôle des doublons et try_get_attribute sont touchés ; tout appel est .attributes().with_checks(false) (garde advisory-guards.mjs). Correctif : quick-xml >= 0.41 dans les crates moteur, hors périmètre de ce fork" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38.4 : seul NsReader est touché, et il n'est employé nulle part (garde advisory-guards.mjs). Correctif : quick-xml >= 0.41, hors périmètre" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1 non maintenu, sans version sûre publiée ; atteint par lightcraft-engine -> ab_glyph 0.2.32 -> owned_ttf_parser pour le filigrane d'export, qui n'analyse que des polices embarquées et épinglées (Inter, craft-fonts). Avis de maintenance, pas de vulnérabilité ; à réévaluer à chaque montée" },
+]
 
 [licenses]
 # Licences permissives admises pour tout le graphe. Rien de copyleft : une crate sous une autre
@@ -23,10 +29,8 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
     "Zlib",
     "Unicode-3.0",
 ]
