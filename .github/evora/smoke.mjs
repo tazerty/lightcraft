@@ -49,12 +49,13 @@ function parseArgs(argv) {
   // E3 : langue imposée par ?lang= (codes d'Evora), vérifiée par web.stats.language ; pt sans variante (D-23) reste en anglais.
   if (o.scenarios.length === 0) {
     o.scenarios = [
-      { name: 'defaut', query: '', lang: 'en' },
+      // E2 : thème Evora imposé par ?theme=light|dark (accent #4f46e5) ; sans paramètre, le thème de l'app (Charcoal)
+      { name: 'defaut', query: '', lang: 'en', theme: { evora: false, dark: true, accent: '#0165dd' } },
       { name: 'memoire-zh-Hans', query: '?store=memory&lang=zh-Hans', lang: 'zh-hans' },
       { name: 'pt-sans-variante', query: '?store=memory&lang=pt', lang: 'en' },
       // E5 : espace de noms de stockage (OPFS), contrôlé puis purgé par web.purgeStorage
-      { name: 'espace-de-noms', query: '?storageNs=evoraTest1&lang=de', lang: 'de', ns: 'evoraTest1' },
-      { name: 'francais', query: '?store=memory&lang=fr', lang: 'fr' },
+      { name: 'espace-de-noms', query: '?storageNs=evoraTest1&lang=de&theme=dark', lang: 'de', ns: 'evoraTest1', theme: { evora: true, dark: true, accent: '#4f46e5' } },
+      { name: 'francais', query: '?store=memory&lang=fr&theme=light', lang: 'fr', theme: { evora: true, dark: false, accent: '#4f46e5' } },
     ];
   }
   return o;
@@ -308,6 +309,12 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   result.appLog = appLog.slice(0, 40);
   result.crossOrigin = !!result.last?.origin && result.last.origin === engineOrigin && engineOrigin !== parentOrigin;
   result.language = result.last?.stats?.language;
+  result.theme = result.last?.stats?.theme;
+  if (sc.theme && result.last?.ready) {
+    for (const k of ['evora', 'dark', 'accent']) {
+      if (result.theme?.[k] !== sc.theme[k]) errors.push(`thème : ${k} = ${JSON.stringify(result.theme?.[k])}, attendu ${JSON.stringify(sc.theme[k])} (E2)`);
+    }
+  }
   if (sc.lang && result.last?.ready && result.language !== sc.lang) errors.push(`langue de l'interface ${result.language}, attendue ${sc.lang} (E3)`);
   result.ok = !!result.last?.ready && errors.length === 0 && result.crossOrigin && result.targets?.includes('iframe');
   if (!result.ok) result.chromeStderr = stderr.split('\n').slice(-30);
@@ -375,7 +382,7 @@ async function main() {
     const s = r.last || {};
     console.log(`\n== Scénario ${r.scenario} : ${r.ok ? 'OK' : 'ÉCHEC'} (${r.browser || 'navigateur ?'})`);
     console.log(`page parente ${r.parentOrigin} -> iframe ${r.engineUrl} (origine ${s.origin || '?'}, ${r.crossOrigin ? 'origine différente confirmée' : 'origine NON confirmée'})`);
-    console.log(`cibles attachées : ${(r.targets || []).join(', ')} ; WebGL2 : ${r.webgl2 || '?'} ; langue de l'interface : ${r.language ?? '?'}${sc.lang ? ` (attendue ${sc.lang})` : ''}`);
+    console.log(`cibles attachées : ${(r.targets || []).join(', ')} ; WebGL2 : ${r.webgl2 || '?'} ; langue de l'interface : ${r.language ?? '?'}${sc.lang ? ` (attendue ${sc.lang})` : ''} ; thème ${JSON.stringify(r.theme ?? null)}`);
     console.log(`démarrage à froid : prêt à ${s.tReady ? Math.round(s.tReady) : '?'} ms après la navigation de l'iframe (performance.now), ${r.wallMs} ms d'horloge depuis la navigation de la page parente ; première frame UI annoncée par l'app : ${r.appFirstFrameMs ?? '?'} ms`);
     console.log(`état final : canvas ${s.w}x${s.h}, chargement retiré ${s.loading === false}, API ${s.api}, web.stats ${s.stats ? JSON.stringify(s.stats) : 'absent'}${s.probeError ? `, erreur de sonde ${s.probeError}` : ''}${s.status ? `, statut « ${s.status} »` : ''}`);
     if (r.storage) console.log(`E5 stockage : racine OPFS ${JSON.stringify(r.storage.top)} ; espace de noms avant purge ${JSON.stringify(r.storage.before)} ; bases IndexedDB ${JSON.stringify(r.storage.dbs)} ; localStorage ${r.storage.ls} ; purge ${JSON.stringify(r.storage.purge)} ; après purge ${JSON.stringify(r.storage.after)}`);

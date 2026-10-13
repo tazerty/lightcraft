@@ -163,9 +163,103 @@ impl Default for Tokens {
     }
 }
 
+thread_local! {
+    /// Evora (E2): the host's identity in place of the themes' colours ([`set_evora_palette`]).
+    static EVORA_PALETTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Evora's accent colour (Tailwind indigo-600, `#4F46E5`).
+pub const EVORA_ACCENT: Color32 = Color32::from_rgb(0x4f, 0x46, 0xe5);
+
+/// Evora (E2): show Evora's identity (Tailwind's grey neutrals and the indigo accent
+/// [`EVORA_ACCENT`]) in place of every theme's colours, light or dark as the Appearance Mode
+/// says. The UI face is Inter already. The web host sets it before the first frame (`?theme=`).
+pub fn set_evora_palette(on: bool) {
+    EVORA_PALETTE.with(|palette| palette.set(on));
+}
+
+/// Is Evora's identity shown ([`set_evora_palette`])?
+pub fn evora_palette() -> bool {
+    EVORA_PALETTE.with(std::cell::Cell::get)
+}
+
+/// Evora's light or dark tokens: Tailwind's grey scale (gray-50 to gray-950), the indigo accent,
+/// red and amber for rejects and cautions. Metrics are the app's own.
+fn evora_tokens(dark: bool) -> Tokens {
+    let rgb = |v: u32| Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
+    let base = Tokens::default();
+    if dark {
+        Tokens {
+            chrome: rgb(0x111827),
+            canvas: rgb(0x030712),
+            grid_bg: rgb(0x030712),
+            cell: rgb(0x111827),
+            cell_selected: rgb(0x1f2937),
+            divider: rgb(0x030712),
+            inset: rgb(0x030712),
+            field: rgb(0x1f2937),
+            field_border: rgb(0x374151),
+            button: rgb(0x1f2937),
+            button_border: rgb(0x4b5563),
+            hover: rgb(0x374151),
+            pressed: rgb(0x4b5563),
+            tool_active: rgb(0x374151),
+            text: rgb(0xf3f4f6),
+            text_label: rgb(0xd1d5db),
+            text_dim: rgb(0x9ca3af),
+            text_disabled: rgb(0x4b5563),
+            icon: rgb(0x9ca3af),
+            track: rgb(0x4b5563),
+            thumb: rgb(0xd1d5db),
+            thumb_hover: rgb(0xf9fafb),
+            accent: EVORA_ACCENT,
+            star: rgb(0xe5e7eb),
+            pick: rgb(0xf9fafb),
+            reject: rgb(0xef4444),
+            caution: rgb(0xf59e0b),
+            ..base
+        }
+    } else {
+        Tokens {
+            chrome: rgb(0xffffff),
+            canvas: rgb(0xf3f4f6),
+            grid_bg: rgb(0xf9fafb),
+            cell: rgb(0xf3f4f6),
+            cell_selected: rgb(0xe5e7eb),
+            divider: rgb(0xe5e7eb),
+            inset: rgb(0xf9fafb),
+            field: rgb(0xffffff),
+            field_border: rgb(0xd1d5db),
+            button: rgb(0xffffff),
+            button_border: rgb(0xd1d5db),
+            hover: rgb(0xf3f4f6),
+            pressed: rgb(0xe5e7eb),
+            tool_active: rgb(0xe5e7eb),
+            text: rgb(0x111827),
+            text_label: rgb(0x374151),
+            text_dim: rgb(0x6b7280),
+            text_disabled: rgb(0x9ca3af),
+            icon: rgb(0x4b5563),
+            track: rgb(0xd1d5db),
+            thumb: rgb(0x4b5563),
+            thumb_hover: rgb(0x111827),
+            accent: EVORA_ACCENT,
+            star: rgb(0x374151),
+            pick: rgb(0x1f2937),
+            reject: rgb(0xdc2626),
+            caution: rgb(0xd97706),
+            ..base
+        }
+    }
+}
+
 impl Tokens {
-    /// The tokens of `kind`. Metrics are shared; only colours change.
+    /// The tokens of `kind`. Metrics are shared; only colours change. With Evora's identity on
+    /// (E2), every dark theme shows Evora's dark tokens and every light theme its light ones.
     pub fn for_kind(kind: ThemeKind) -> Tokens {
+        if evora_palette() {
+            return evora_tokens(kind.is_dark());
+        }
         let rgb = |v: u32| Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
         let base = Tokens::default();
         match kind {
