@@ -324,6 +324,37 @@ jobs:
           node .github/evora/bundle-gates.mjs check "${{ steps.unpacked.outputs.dir }}" --zip "${{ steps.pkg.outputs.zip }}" \
             --summary "$GITHUB_STEP_SUMMARY" --json "$RUNNER_TEMP/evora-diag/bundle-gates.json"
 
+      - name: Porte E6 — polices (craft-fonts épinglé, police chinoise servie à part)
+        id: g_e6
+        continue-on-error: true
+        env:
+          DIR: ${{ steps.unpacked.outputs.dir }}
+        run: |
+          set -euo pipefail
+          have="$(git -C craft-fonts rev-parse HEAD)"
+          [ "$have" = "$CRAFT_FONTS_REV" ] || { echo "::error::craft-fonts à $have, épinglé à $CRAFT_FONTS_REV"; exit 1; }
+          # la face chinoise du manifeste de craft-fonts (même lecture que xtask/src/web.rs)
+          line="$(awk -F'|' '{ for (i = 1; i <= NF; i++) gsub(/^ +| +$/, "", $i) } $1 == "Noto Sans CJK SC" && $2 == "Regular" { print $3 "|" $6 "|" $7; exit }' craft-fonts/fonts/manifest.txt)"
+          [ -n "$line" ] || { echo "::error::Noto Sans CJK SC Regular absente du manifeste de craft-fonts"; exit 1; }
+          IFS='|' read -r font_path lic_path pinned <<< "$line"
+          src="craft-fonts/$font_path"; lic="craft-fonts/$lic_path"
+          served="$DIR/lightcraft_zh_hans.otf"
+          [ -f "$served" ] || { echo "::error::police chinoise absente de l'archive"; exit 1; }
+          a="$(sha256sum "$src" | cut -d' ' -f1)"; b="$(sha256sum "$served" | cut -d' ' -f1)"
+          [ "$a" = "$b" ] || { echo "::error::lightcraft_zh_hans.otf ($b) diffère de la face de craft-fonts ($a)"; exit 1; }
+          [ "$b" = "$pinned" ] || { echo "::error::lightcraft_zh_hans.otf ($b) diffère de l'empreinte du manifeste ($pinned)"; exit 1; }
+          cmp -s "$lic" "$DIR/OFL-noto-sans-cjk-sc.txt" || { echo "::error::licence OFL de la police chinoise absente ou différente"; exit 1; }
+          n_ofl="$(find "$DIR/LICENSES" -name 'OFL-*.txt' | wc -l)"
+          wasm="$(stat -c %s "$DIR/lightcraft_web_bg.wasm")"; font="$(stat -c %s "$served")"
+          {
+            echo "### Porte E6 : polices"
+            echo
+            echo "- craft-fonts : $have (épinglé)"
+            echo "- police chinoise servie à part : lightcraft_zh_hans.otf, $font o, sha256 $b, identique à $font_path de craft-fonts et à l'empreinte de son manifeste"
+            echo "- licence : OFL-noto-sans-cjk-sc.txt identique à $lic_path ; $n_ofl fichiers OFL dans LICENSES/"
+            echo "- module wasm (polices japonaises BIZ UDPGothic et Inter embarquées) : $wasm o"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Test de fumée — sabotage CSP (doit échouer)
         id: g_smoke_sabotage
         continue-on-error: true
@@ -351,6 +382,7 @@ jobs:
           EMOJI: ${{ steps.g_emoji.outcome }}
           DENY: ${{ steps.g_deny.outcome }}
           E7: ${{ steps.g_e7.outcome }}
+          E6: ${{ steps.g_e6.outcome }}
           ABOUT: ${{ steps.g_about.outcome }}
           BUNDLE: ${{ steps.g_bundle.outcome }}
           SABOTAGE: ${{ steps.g_smoke_sabotage.outcome }}
@@ -365,6 +397,7 @@ jobs:
             echo "| E10 émojis et E9 termes sensibles (catalogues affichés, code d'interface) | $EMOJI |"
             echo "| cargo-deny (licences, avis, sources) | $DENY |"
             echo "| E7 neutralisations du graphe web | $E7 |"
+            echo "| E6 polices (craft-fonts épinglé, police chinoise à part) | $E6 |"
             echo "| cargo-about (LICENSES/ des crates) | $ABOUT |"
             echo "| Bundle (marques, hébergement, .gz/.br, CSP, taille) | $BUNDLE |"
             echo "| Sabotage CSP du test de fumée (doit rougir) | $SABOTAGE |"
@@ -372,7 +405,7 @@ jobs:
             echo
             echo "Avertissements de cargo-deny : $(awk '/^warning/ { n++ } END { print n + 0 }' "$RUNNER_TEMP/cargo-deny.txt" 2>/dev/null || echo '?') (détail dans le journal de la porte)."
           } >> "$GITHUB_STEP_SUMMARY"
-          for v in "$EMOJI" "$DENY" "$E7" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE"; do
+          for v in "$EMOJI" "$DENY" "$E7" "$E6" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE"; do
             if [ "$v" != "success" ]; then echo "::error::au moins une porte est rouge : voir le résumé du job"; exit 1; fi
           done
           echo "Toutes les portes sont vertes."
