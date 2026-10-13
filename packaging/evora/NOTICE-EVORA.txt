@@ -1,0 +1,28 @@
+Evora Revela : mentions
+=======================
+
+Revela est basé sur LightCraft par l'équipe ArtCraft (https://github.com/storytold/lightcraft),
+publié sous licence MIT OR Apache-2.0 au choix (voir LICENSE-MIT, LICENSE-APACHE et NOTICE).
+
+Cette version a été modifiée par Evora (fork public https://github.com/tazerty/lightcraft). Le nom,
+le logotype et les logos ArtCraft sont des marques de l'équipe ArtCraft. Ils ne sont pas couverts
+par ces licences et ont été retirés de cette version, qui n'est ni produite, ni parrainée, ni
+approuvée par l'équipe ArtCraft.
+
+Les mentions des composants tiers (polices, données, crates Rust) figurent dans les autres fichiers
+de ce dossier.
+
+
+Evora Revela: notices
+---------------------
+
+Revela is based on LightCraft by the ArtCraft team (https://github.com/storytold/lightcraft),
+released under the MIT License or the Apache License 2.0, at your option (see LICENSE-MIT,
+LICENSE-APACHE and NOTICE).
+
+This version was modified by Evora (public fork https://github.com/tazerty/lightcraft). The ArtCraft
+name, wordmark and logos are trademarks of the ArtCraft team. They are not covered by those licenses
+and have been removed from this version, which is not made, sponsored or endorsed by the ArtCraft
+team.
+
+Third-party notices (fonts, data, Rust crates) are in the other files of this folder.

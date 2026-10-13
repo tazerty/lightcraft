@@ -183,6 +183,8 @@ jobs:
           for f in LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE assets/ATTRIBUTION.md; do
             if [ -f "$f" ]; then cp "$f" "$WORK/$NAME/LICENSES/"; fi
           done
+          # E1 : mention en texte simple « basé sur LightCraft par l'équipe ArtCraft » (licence de marque amont).
+          cp packaging/evora/NOTICE-EVORA.txt "$WORK/$NAME/LICENSES/"
           for lic in craft-fonts/fonts/*/OFL.txt; do
             [ -f "$lic" ] || continue
             cp "$lic" "$WORK/$NAME/LICENSES/OFL-$(basename "$(dirname "$lic")").txt"

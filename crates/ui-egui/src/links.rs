@@ -1,13 +1,11 @@
-//! Community and project links (Help menu, About dialog, top-bar Discord button).
+//! Project links (Help menu, About dialog).
+//!
+//! Evora (EVORA-REV E1): the upstream brand links (community chat, brand website, the app's page
+//! on it) are removed, as the brand licence requires of a modified version (docs/brand/
+//! LICENSE-brand.txt). Only the source repository, its documentation and its issue tracker remain.
 
-/// The app's id in ArtCraft URLs.
+/// The app's id in its repository URL.
 pub const APP: &str = "lightcraft";
-/// The ArtCraft community Discord.
-pub const DISCORD: &str = "https://discord.gg/artcraft";
-/// The ArtCraft website.
-pub const WEBSITE: &str = "https://getartcraft.com";
-/// This app's page on the ArtCraft website.
-pub const APP_PAGE: &str = "https://getartcraft.com/apps/lightcraft";
 /// This app's source repository.
 pub const GITHUB: &str = "https://github.com/storytold/lightcraft";
 
@@ -17,10 +15,7 @@ pub const HELP: &str = "https://github.com/storytold/lightcraft/tree/main/docs";
 
 pub const LINKS: &[(&str, &str, &str)] = &[
     ("app.help", "LightCraft Help", HELP),
-    ("app.discord", "Join the ArtCraft Discord…", DISCORD),
-    ("app.website", "LightCraft Website", APP_PAGE),
     ("app.github", "LightCraft on GitHub", GITHUB),
-    ("app.artcraft", "ArtCraft Website", WEBSITE),
     ("app.feedback", "Send Feedback…", FEEDBACK),
 ];
 
@@ -50,7 +45,11 @@ mod tests {
             assert!(!label.is_empty());
             assert_eq!(url_of(id), Some(*url));
         }
-        assert!(APP_PAGE.ends_with(&format!("/apps/{APP}")));
         assert!(GITHUB.ends_with(&format!("/storytold/{APP}")));
+        // Evora (E1): no brand link survives in a modified build.
+        for (id, label, url) in LINKS {
+            let all = format!("{id} {label} {url}").to_lowercase();
+            assert!(!all.contains("artcraft") && !all.contains("discord"), "{id}");
+        }
     }
 }

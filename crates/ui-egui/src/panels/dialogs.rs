@@ -1344,26 +1344,11 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                                 crate::theme::font_credits(app.chinese_font.is_some())
                             ));
                             ui.add_space(10.0);
-                            let r = crate::button::Button::new("Join the ArtCraft Discord")
-                                .primary()
-                                .large()
-                                .min_width(260.0)
-                                .widget("button:aboutDiscord")
-                                .tooltip(crate::links::DISCORD)
-                                .show(ui);
+                            // Evora (E1): no brand button or link in a modified build; the source stays linked.
+                            let url = crate::links::GITHUB;
+                            let r = ui.link(crate::i18n::tr("Source code on GitHub")).on_hover_text(url);
                             if r.clicked() {
-                                let _ = crate::links::open(app, crate::links::DISCORD);
-                            }
-                            ui.add_space(6.0);
-                            for (label, url) in [
-                                ("LightCraft website", crate::links::APP_PAGE),
-                                ("Source code on GitHub", crate::links::GITHUB),
-                                ("ArtCraft — more creative apps", crate::links::WEBSITE),
-                            ] {
-                                let r = ui.link(crate::i18n::tr(label)).on_hover_text(url);
-                                if r.clicked() {
-                                    let _ = crate::links::open(app, url);
-                                }
+                                let _ = crate::links::open(app, url);
                             }
                         }
                     }
