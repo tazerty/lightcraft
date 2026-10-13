@@ -4,13 +4,16 @@
     "« messages » : surcharges de message entier, par texte source anglais puis par code de langue ; prioritaires.",
     "« replace » : remplacements de sous-chaînes, dans l'ordre, sur le texte affiché (traduction ou source anglaise).",
     "Les messages de tr() sont surchargés à l'exécution (i18n.rs), ceux de tr_format! à la compilation (build.rs), avec ce même fichier.",
-    "Termes neutres provisoires, à valider avec la revue juridique (D-16) : LRCAT (format du catalogue importé), opRGB (nom normalisé CEI 61966-2-5 de l'espace Adobe RGB (1998))."
+    "Termes neutres provisoires, à valider avec la revue juridique (D-16) : LRCAT (format du catalogue importé), opRGB (nom normalisé CEI 61966-2-5 de l'espace Adobe RGB (1998)).",
+    "E10 (rendu) : ▸ (U+25B8) et ▾ (U+25BE) n'ont de glyphe dans aucune police de l'interface (mesuré par web.renderAudit) ; ils s'affichent › (U+203A) et ⌄ (U+2304)."
   ],
   "replace": [
     ["Lightroom Classic", "LRCAT"],
     ["Lightroom", "LRCAT"],
     ["Adobe RGB (1998)", "opRGB"],
-    ["Adobe RGB", "opRGB"]
+    ["Adobe RGB", "opRGB"],
+    ["\u25b8", "\u203a"],
+    ["\u25be", "\u2304"]
   ],
   "messages": {
     "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": {

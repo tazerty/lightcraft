@@ -29,7 +29,7 @@ import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import { auditRust, isEmoji, SENSITIVE_TERMS, INFO_TERMS } from './catalog-audit.mjs';
+import { auditRust, isEmoji, isSymbol, loadOverrides, SENSITIVE_TERMS, INFO_TERMS } from './catalog-audit.mjs';
 
 // Émojis témoins : la police de l'interface ne doit pas pouvoir les peindre en émoji.
 const EMOJI_SAMPLES = '\u{1F600}\u2705\u274C\u2B50\u26A1\u{1F50D}\u{1F4C1}\u{1F5D1}\u26A0\u2714\u2716';
@@ -314,8 +314,15 @@ async function main() {
   const results = [];
   let codeSymbols = new Map();
   if (opts.renderAudit) {
+    // Symboles des littéraux du code TELS QU'AFFICHÉS : ils passent par tr()/tr_format!, donc par le
+    // catalogue de surcharge d'affichage (▸ s'affiche ›, ▾ s'affiche ⌄).
     const rs = auditRust(opts.repo);
-    codeSymbols = rs.symbols;
+    const ov = loadOverrides(opts.repo);
+    codeSymbols = new Map();
+    for (const [ch, n] of rs.symbols) {
+      const shown = ov.replace.reduce((t, [from, to]) => t.split(from).join(to), ch);
+      for (const c of shown) if (isSymbol(c) || isEmoji(c)) codeSymbols.set(c, (codeSymbols.get(c) || 0) + n);
+    }
     const last = opts.scenarios[opts.scenarios.length - 1];
     last.audit = true;
     last.probe = [...codeSymbols.keys()].join('') + EMOJI_SAMPLES;
