@@ -50,6 +50,16 @@ fn set_status(text: &str) {
     }
 }
 
+/// Wait `ms` milliseconds (a browser timer), without blocking the page.
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(w) = window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(p).await;
+}
+
 /// Storage key of library file `name` in library folder `dir`.
 fn library_key(dir: &str, name: &str) -> String {
     format!("{dir}/{name}")
@@ -73,6 +83,9 @@ struct Options {
     reset: bool,
     /// Evora (E3): the UI language the host imposes, as the host names it (`fr`, `zh-Hans`, `pt`…).
     lang: Option<String>,
+    /// Evora (E5): the storage namespace the host gives (`?storageNs=`, an opaque id): a
+    /// namespace, not a partition (see `backend::NS_PREFIX`).
+    storage_ns: Option<String>,
 }
 
 impl Options {
@@ -94,6 +107,7 @@ impl Options {
             workers: get("workers").and_then(|v| v.parse().ok()),
             reset: get("reset").is_some(),
             lang: get("lang").filter(|v| !v.is_empty() && v.len() <= 35),
+            storage_ns: get("storageNs"),
         }
     }
 }
@@ -302,7 +316,7 @@ async fn boot(opts: Options) -> Boot {
     let backend = if opts.store == "memory" {
         None
     } else {
-        match Backend::open(opts.store == "idb").await {
+        match Backend::open(opts.store == "idb", opts.storage_ns.as_deref()).await {
             Ok(b) => Some(b),
             Err(e) => {
                 log::error!("no browser storage ({e}); this session won't be saved");
@@ -396,6 +410,8 @@ struct WebApp {
     /// Saving stopped (a restored backup is about to replace this library: the page reloads).
     frozen: Rc<Cell<bool>>,
     lib_dir: String,
+    /// Evora (E5): the storage namespace, when the host gave one.
+    storage_ns: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
     last_save: f64,
@@ -466,10 +482,16 @@ impl WebApp {
             cores.saturating_sub(1).clamp(1, 4)
         });
         let cache = app.session.media.rendered.clone();
+        // the workers open the same storage, in the same namespace (E5)
+        let worker_store = match (&backend, opts.storage_ns.as_deref()) {
+            (Some(b), Some(ns)) => format!("{}:{ns}", b.kind()),
+            (Some(b), None) => b.kind().to_string(),
+            (None, _) => "memory".to_string(),
+        };
         let workers = (n > 0).then(|| {
             Workers::start(
                 n,
-                backend.as_ref().map_or("memory", |b| b.kind()),
+                &worker_store,
                 backend.clone(),
                 index,
                 &cache,
@@ -493,6 +515,7 @@ impl WebApp {
             flush_failed_at: Rc::new(Cell::new(0.0)),
             frozen,
             lib_dir,
+            storage_ns: opts.storage_ns.clone(),
             bench: opts.bench.then(|| Bench::new(origin)),
             first_frame_logged: false,
             last_save: 0.0,
@@ -612,11 +635,39 @@ pub fn command(id: String, params: String) -> js_sys::Promise {
 }
 
 impl WebApp {
+    /// Evora (E5, `evora:purge` once the host bridge exists): delete everything this page keeps in
+    /// browser storage (its namespace only, when it has one) and stop saving; the host then closes
+    /// or reloads the page.
+    fn purge_storage(&mut self) -> serde_json::Value {
+        let Some(b) = self.backend.clone() else { return json!({"purging": false, "storage": "memory"}) };
+        self.frozen.set(true);
+        if let Some(w) = &self.workers {
+            w.terminate_all();
+        }
+        let kind = b.kind();
+        let flushing = self.flushing.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            // a save already under way finishes first (bounded), so that nothing lands after the purge
+            for _ in 0..100 {
+                if !flushing.get() {
+                    break;
+                }
+                sleep_ms(20).await;
+            }
+            match b.clear().await {
+                Ok(()) => log::info!("lightcraft: browser storage purged"),
+                Err(e) => log::warn!("purging browser storage: {e}"),
+            }
+        });
+        json!({"purging": true, "storage": kind})
+    }
+
     fn web_stats(&self) -> serde_json::Value {
         let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
         let (orig_n, orig_bytes) = self.originals.usage();
         json!({
             "language": self.app.ui.language,
+            "namespace": self.storage_ns,
             "storage": self.backend.as_ref().map_or("memory", |b| b.kind()),
             "library": self.lib_dir,
             "dirty": self.files.is_dirty(),
@@ -637,6 +688,7 @@ impl WebApp {
             let params: serde_json::Value = serde_json::from_str(&params).unwrap_or(json!({}));
             let r = match id.as_str() {
                 "web.stats" => Ok(self.web_stats()),
+                "web.purgeStorage" => Ok(self.purge_storage()),
                 "web.renderAudit" => Ok(render_audit(ctx, &params)),
                 _ => self.app.run(&id, params),
             };
@@ -771,7 +823,7 @@ pub fn start(chinese_font: Vec<u8>) {
     let opts = Options::from_url();
     wasm_bindgen_futures::spawn_local(async move {
         // one tab per library: two would each keep their own copy and overwrite each other's saves
-        if opts.store != "memory" && safety::acquire_tab_lock().await == Some(false) {
+        if opts.store != "memory" && safety::acquire_tab_lock(&safety::tab_lock_name(opts.storage_ns.as_deref())).await == Some(false) {
             safety::show_blocking(
                 "LightCraft is already open in another tab or window of this browser.\n\n\
                  Switch to that tab, or close it and reload this page. (Two tabs would overwrite each other's changes.)",
