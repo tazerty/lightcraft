@@ -331,7 +331,7 @@ jobs:
           set +e   # l'échec attendu du sabotage ne doit pas interrompre l'étape
           set -uo pipefail
           node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/sabotage" \
-            --timeout 60 --scenario sabotage-csp= --sabotage-csp
+            --timeout 60 --scenario 'sabotage-csp||' --sabotage-csp
           code=$?
           if [ "$code" -eq 0 ]; then echo "::error::le test de fumée n'a pas rougi sous sabotage CSP : instrument aveugle"; exit 1; fi
           echo "Sabotage CSP : le test de fumée a bien échoué (code $code)."
