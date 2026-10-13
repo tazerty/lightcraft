@@ -1202,7 +1202,7 @@ fn albums_tree(app: &mut LightcraftApp, ui: &mut egui::Ui, all: &AlbumKids, pare
             let label = if target == Some(a.id) { format!("{} +", a.name) } else { a.name.clone() };
             // a smart album whose rules no longer check (an album they test was deleted) says so
             let problems = app.caches.smart_album_problems(&app.session.catalog).get(&a.id).cloned().unwrap_or_default();
-            let label = if problems.is_empty() { label } else { format!("⚠ {label}") };
+            let label = if problems.is_empty() { label } else { format!("(!) {label}") };
             let mut resp = row_sensed(app, ui, &format!("album:{}", a.id.0), icon, &label, None, Some(n), sel, indent, Sense::click_and_drag(), None);
             if !problems.is_empty() {
                 crate::widgets::register(ui.ctx(), format!("albumProblem:{}", a.id.0), resp.rect);
