@@ -10,14 +10,19 @@
 //! with affinity (a photo goes back to the worker that already decoded it), the rendered-
 //! thumbnail memory cache checked before dispatch, and the thumbnail storage index
 //! ([`ThumbIndex`]) kept and pruned here. If no worker comes up, jobs run inline.
+//!
+//! Evora (E4): without browser storage (memory mode, always the case under Evora's host), a
+//! worker can't read a photo's original from storage: the page hands it over with the worker's
+//! first job on that photo ([`Workers::set_memory_originals`]), and the worker keeps it for the
+//! session.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
-use lightcraft_engine::catalog::PhotoId;
+use lightcraft_engine::catalog::{PhotoId, Source};
 use lightcraft_engine::media::{RenderJob, RenderResult, SourceLevel};
 use lightcraft_engine::pipeline::Rendered;
 use lightcraft_preview::{Hash128, PreviewCache};
@@ -27,6 +32,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use crate::backend::Backend;
+use crate::store::Originals;
 use crate::wire::{CacheWatch, ThumbIndex, WireJob, WorkerCore, WorkerSlots, thumb_storage_key};
 
 /// Storage key of the thumbnail index.
@@ -51,6 +57,8 @@ fn now() -> f64 {
 
 thread_local! {
     static CORE: RefCell<WorkerCore> = RefCell::new(WorkerCore::default());
+    /// Evora (E4): originals the page handed over (memory mode), by content hash.
+    static HELD: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
 
 /// Entry point of a render worker (called by `worker.js` after instantiating the module).
@@ -89,6 +97,14 @@ async fn handle(scope: &web_sys::DedicatedWorkerGlobalScope, backend: Option<Bac
     let job: Result<WireJob, String> =
         get(&msg, "job").as_string().ok_or("no job".to_string()).and_then(|j| serde_json::from_str(&j).map_err(|e| e.to_string()));
     let mut transfer = Array::new();
+    // Evora (E4): an original handed over by the page (memory mode)
+    let handed = get(&msg, "original");
+    if let Some(hash) = get(&msg, "originalHash").as_string()
+        && let Some(bytes) = handed.dyn_ref::<Uint8Array>()
+    {
+        let bytes = bytes.to_vec();
+        HELD.with(|h| h.borrow_mut().insert(hash, bytes));
+    }
     let result: Result<(Rendered, u32), String> = async {
         let job = job?;
         let mut cache_miss = false;
@@ -108,7 +124,7 @@ async fn handle(scope: &web_sys::DedicatedWorkerGlobalScope, backend: Option<Bac
         let original = match CORE.with(|c| c.borrow_mut().needs_original(&job)) {
             Some(hash) => match &backend {
                 Some(b) => b.read(&crate::store::storage_key(&hash)).await?,
-                None => None,
+                None => HELD.with(|h| h.borrow().get(&hash).cloned()),
             },
             None => None,
         };
@@ -170,6 +186,8 @@ struct W {
     ready: bool,
     dead: bool,
     busy: Option<Busy>,
+    /// Evora (E4): content hashes of the originals handed to this worker (memory mode).
+    sent: HashSet<String>,
 }
 
 struct Inner {
@@ -185,6 +203,8 @@ struct Inner {
     /// worker message, where the session is out of reach; the app refreshes it every frame.
     budget: u64,
     backend: Option<Backend>,
+    /// Evora (E4): with no `backend`, the originals the page holds, handed to the workers.
+    originals: Option<Originals>,
     ctx: egui::Context,
     /// Jobs finished by workers / inline (for diagnostics).
     remote_done: u64,
@@ -233,6 +253,7 @@ impl Workers {
             index,
             budget,
             backend,
+            originals: None,
             ctx,
             remote_done: 0,
             inline_done: 0,
@@ -276,7 +297,7 @@ impl Workers {
                 worker.terminate();
                 continue;
             }
-            w.0.borrow_mut().workers.push(W { worker, ready: false, dead: false, busy: None });
+            w.0.borrow_mut().workers.push(W { worker, ready: false, dead: false, busy: None, sent: HashSet::new() });
             slots.commit();
         }
         w
@@ -442,6 +463,15 @@ impl Workers {
     pub fn set_budget(&self, bytes: u64) {
         self.0.borrow_mut().budget = bytes;
     }
+
+    /// Evora (E4): with no storage backend, hand the originals `originals` holds to the workers
+    /// (each one gets a photo's bytes with its first job on that photo).
+    pub fn set_memory_originals(&self, originals: Originals) {
+        let mut g = self.0.borrow_mut();
+        if g.backend.is_none() {
+            g.originals = Some(originals);
+        }
+    }
 }
 
 impl RenderOffload for Workers {
@@ -502,16 +532,32 @@ impl RenderOffload for Workers {
         wire.cache_generation = g.index.namespace();
         wire.thumb = disk_key.clone();
         let Ok(text) = serde_json::to_string(&wire) else { return Some(job) };
+        // Evora (E4): no storage to read it from: the original goes with the worker's first job on it
+        let original = match (&g.originals, &wire.origin) {
+            (Some(originals), Source::File { path }) => crate::store::hash_of_path(path)
+                .filter(|hash| !g.workers[i].sent.contains(*hash))
+                .and_then(|hash| originals.get(path).map(|bytes| (hash.to_string(), Uint8Array::from(&bytes[..])))),
+            _ => None,
+        };
         g.next_id = g.next_id.wrapping_add(1);
         let id = g.next_id;
         let msg = Object::new();
         set(&msg, "id", &id.into());
         set(&msg, "job", &text.into());
+        let transfer = Array::new();
+        if let Some((hash, bytes)) = &original {
+            set(&msg, "originalHash", &hash.into());
+            set(&msg, "original", bytes);
+            transfer.push(&bytes.buffer());
+        }
         let namespace = g.index.namespace();
         let w = &mut g.workers[i];
-        if let Err(e) = w.worker.post_message(&msg) {
+        if let Err(e) = w.worker.post_message_with_transfer(&msg, &transfer) {
             log::warn!("render worker {i}: {e:?}");
             return Some(job);
+        }
+        if let Some((hash, _)) = original {
+            w.sent.insert(hash);
         }
         w.busy = Some(Busy {
             disk_key,
