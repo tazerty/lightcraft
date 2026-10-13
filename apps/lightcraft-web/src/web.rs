@@ -631,10 +631,10 @@ fn audited_char(c: char) -> bool {
 }
 
 /// Evora (E10, E9): what this module displays, measured in the running page. Every catalog message
-/// in every language as `tr` shows it: the symbols it uses and whether the live UI fonts paint them,
-/// and the sensitive terms (`params.terms`) still visible after the display overrides. `params.probe`
-/// lists more characters to check (the code's own symbols, sample emoji). Each character also gets
-/// the faces that paint it, measured face by face on a separate context with the UI's faces.
+/// in every language as `tr` shows it: the symbols it uses, the live UI faces that cover each one
+/// (from the faces' character maps, in fallback order: the first one paints it), and the sensitive
+/// terms (`params.terms`) still visible after the display overrides. `params.probe` lists more
+/// characters to check (the code's own symbols, sample emoji).
 fn render_audit(ctx: &egui::Context, params: &serde_json::Value) -> serde_json::Value {
     use std::collections::BTreeMap;
     use lightcraft_ui_egui::i18n::{Locale, displayed_messages};
@@ -660,36 +660,25 @@ fn render_audit(ctx: &egui::Context, params: &serde_json::Value) -> serde_json::
     let mut chars: Vec<char> = symbols.keys().copied().chain(probe.iter().copied()).collect();
     chars.sort_unstable();
     chars.dedup();
-    let ui_font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
-    let live: BTreeMap<char, bool> = ctx.fonts_mut(|fonts| chars.iter().map(|c| (*c, fonts.has_glyph(&ui_font, *c))).collect());
-    // face by face, on a separate context loaded with the UI's faces (no Chinese face: CJK is out of scope)
-    let mut defs = lightcraft_ui_egui::theme::font_definitions(lightcraft_engine::CRAFT_FONTS);
-    let proportional = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
-    let faces: Vec<String> = defs.font_data.keys().cloned().collect();
-    let family_of = |face: &str| egui::FontFamily::Name(format!("evora-probe {face}").into());
-    for face in &faces {
-        defs.families.insert(family_of(face.as_str()), vec![face.clone()]);
-    }
-    let probe_ctx = egui::Context::default();
-    probe_ctx.set_fonts(defs);
-    let _ = probe_ctx.run_ui(egui::RawInput::default(), |_| {});
-    let by_face: BTreeMap<char, Vec<String>> = probe_ctx.fonts_mut(|fonts| {
-        chars
-            .iter()
-            .map(|c| {
-                let painted: Vec<String> =
-                    faces.iter().filter(|face| fonts.has_glyph(&egui::FontId::new(13.0, family_of(face.as_str())), *c)).cloned().collect();
-                (*c, painted)
-            })
-            .collect()
+    // `has_glyph` reports a character owned by the family's replacement face (Inter, first in the
+    // family) as missing; the faces' character maps tell exactly which faces cover it.
+    let (proportional, faces, coverage): (Vec<String>, Vec<String>, BTreeMap<char, Vec<String>>) = ctx.fonts_mut(|fonts| {
+        let definitions = fonts.definitions();
+        let proportional = definitions.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+        let faces: Vec<String> = definitions.font_data.keys().cloned().collect();
+        let mut font = fonts.fonts.font(&egui::FontFamily::Proportional);
+        let covered = font.characters();
+        let coverage: BTreeMap<char, Vec<String>> = chars.iter().map(|c| (*c, covered.get(c).cloned().unwrap_or_default())).collect();
+        (proportional, faces, coverage)
     });
     let row = |c: char| {
+        let by = coverage.get(&c).cloned().unwrap_or_default();
         json!({
             "c": c.to_string(),
             "cp": format!("U+{:04X}", u32::from(c)),
             "n": symbols.get(&c).copied().unwrap_or(0),
-            "paint": live.get(&c).copied().unwrap_or(false),
-            "faces": by_face.get(&c).cloned().unwrap_or_default(),
+            "paint": !by.is_empty(),
+            "faces": by,
         })
     };
     json!({
