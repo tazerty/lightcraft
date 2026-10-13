@@ -6,9 +6,9 @@
 # épinglées par SHA complet), toolchain Rust installée par rustup à version exacte, outils de build
 # installés à version exacte (cargo install --locked), permissions en lecture seule, aucun secret.
 #
-# Sortie : artefact Actions « evora-lightcraft-web-<tag> » contenant evora-lightcraft-web-<tag>.zip,
+# Sortie : artefact Actions « evora-revela-web-<tag> » contenant evora-revela-web-<tag>.zip,
 # csp-hashes.txt, SHA256SUMS et BUILD-INFO.txt (le zip porte le site, ses copies .gz/.br et LICENSES/).
-# Le nom reste celui de l'amont tant que E1 et les portes ne sont pas au vert.
+# Le nom Evora n'est pris qu'une fois E1 posé et toutes les portes au vert (run 38369456468, EVORA-REV-05).
 #
 # Portes (ARCHITECTURE §3.4), toutes BLOQUANTES depuis E1 : chaque porte tourne même si une autre a
 # échoué (continue-on-error), et l'étape « Verdict des portes » fait échouer le job si une seule est
@@ -225,7 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           SITE="target/web-site"
-          NAME="evora-lightcraft-web-$TAG"
+          NAME="evora-revela-web-$TAG"
           OUT="$GITHUB_WORKSPACE/dist/evora"
           WORK="$RUNNER_TEMP/evora-package"
           [ -f "$SITE/index.html" ] || { echo "::error::$SITE/index.html absent"; exit 1; }
