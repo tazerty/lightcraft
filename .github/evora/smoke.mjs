@@ -16,6 +16,11 @@
 //
 // Usage : node smoke.mjs --site <dossier> --out <dossier> [--chrome <binaire>] [--timeout <s>]
 //                        [--scenario nom=requête]... [--sabotage-csp]
+//                        [--render-audit --repo <dépôt>] [--terms-blocking]
+// --render-audit appelle la commande web.renderAudit du module (patch E10) dans le dernier scénario
+// prêt et juge le rendu : aucune face d'émoji dans les familles de l'interface, aucun émoji dans les
+// messages affichés, tout symbole affiché (catalogues et littéraux du code) peint par une police
+// de texte ; les termes sensibles (E9) restants sont relevés, et bloquants avec --terms-blocking.
 // --sabotage-csp remplace les empreintes par une empreinte fausse : le script inline est bloqué et
 // le test DOIT échouer (preuve que la porte sait rougir).
 import { spawn } from 'node:child_process';
@@ -24,6 +29,14 @@ import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
+import { auditRust, isEmoji } from './catalog-audit.mjs';
+
+// Termes sensibles (D-16, patch E9) recherchés dans les messages affichés.
+export const SENSITIVE_TERMS = ['Lumetri', 'Lightroom', 'Acrobat', 'Premiere', 'Adobe', 'Cycore'];
+// Relevés pour information seulement (UPSTREAM.md §5, selon D-16).
+const INFO_TERMS = ['Apple Photos'];
+// Émojis témoins : la police de l'interface ne doit pas pouvoir les peindre en émoji.
+const EMOJI_SAMPLES = '\u{1F600}\u2705\u274C\u2B50\u26A1\u{1F50D}\u{1F4C1}\u{1F5D1}\u26A0\u2714\u2716';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm',
@@ -31,11 +44,11 @@ const MIME = {
 };
 
 function parseArgs(argv) {
-  const o = { scenarios: [], timeout: 150, sabotageCsp: false };
+  const o = { scenarios: [], timeout: 150, sabotageCsp: false, renderAudit: false, termsBlocking: false, repo: '.' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     const v = argv[i + 1];
-    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--scenario') { const [n, q] = v.split('='); o.scenarios.push({ name: n, query: q || '' }); i += 1; }
+    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--scenario') { const [n, q] = v.split('='); o.scenarios.push({ name: n, query: q || '' }); i += 1; }
   }
   if (o.scenarios.length === 0) o.scenarios = [{ name: 'defaut', query: '' }, { name: 'memoire', query: '?store=memory' }];
   return o;
@@ -235,6 +248,14 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
         expression: `(() => { const g = document.createElement('canvas').getContext('webgl2'); if (!g) return 'aucun'; const d = g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER); })()`,
         returnByValue: true }, frameSession);
       result.webgl2 = webgl.result?.value;
+      if (sc.audit) {
+        const params = JSON.stringify({ terms: [...SENSITIVE_TERMS, ...INFO_TERMS], probe: sc.probe });
+        const r = await withTimeout(cdp.send('Runtime.evaluate', {
+          expression: `globalThis.lightcraft.command('web.renderAudit', ${JSON.stringify(params)})`, awaitPromise: true, returnByValue: true,
+        }, frameSession), 90000, 'web.renderAudit');
+        if (r.exceptionDetails) errors.push(`web.renderAudit : ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
+        else result.renderAudit = JSON.parse(r.result.value);
+      }
     }
     result.targets = [...targets.values()].map((t) => t.type);
   } catch (err) {
@@ -255,6 +276,36 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   return result;
 }
 
+// Jugement du rendu (E10) et des termes sensibles (E9) à partir de web.renderAudit.
+function judgeRender(audit, codeSymbols, termsBlocking) {
+  const lines = [];
+  const problems = [];
+  const emojiFaces = (audit.proportional || []).filter((f) => /noto.?emoji/i.test(f));
+  lines.push(`familles proportionnelles de l'interface : ${(audit.proportional || []).join(', ')}`);
+  lines.push(`faces chargées : ${(audit.faces || []).join(', ')}`);
+  lines.push(`messages affichés par langue : ${Object.entries(audit.messages || {}).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  if (emojiFaces.length) problems.push(`face d'émoji encore dans les familles de l'interface : ${emojiFaces.join(', ')}`);
+  for (const r of audit.symbols || []) {
+    const tag = isEmoji(r.c) ? 'ÉMOJI' : 'symbole';
+    lines.push(`affiché ${r.cp} ${r.c} ×${r.n} (${tag}) : ${r.paint ? 'peint' : 'NON PEINT'} par ${r.faces.join(', ') || 'aucune face'}`);
+    if (isEmoji(r.c)) problems.push(`émoji affiché ${r.cp} ${r.c} (×${r.n})`);
+    if (!r.paint) problems.push(`symbole affiché sans glyphe ${r.cp} ${r.c}`);
+  }
+  for (const r of audit.probe || []) {
+    const fromCode = codeSymbols.has(r.c);
+    lines.push(`sonde ${r.cp} ${r.c} (${fromCode ? 'littéral du code' : 'émoji témoin'}) : ${r.paint ? 'peint' : 'non peint'} par ${r.faces.join(', ') || 'aucune face'}`);
+    if (fromCode && !r.paint) problems.push(`symbole du code sans glyphe ${r.cp} ${r.c}`);
+  }
+  const sensitive = (audit.sensitive || []).filter((x) => SENSITIVE_TERMS.includes(x.term));
+  const info = (audit.sensitive || []).filter((x) => !SENSITIVE_TERMS.includes(x.term));
+  const count = (list) => Object.entries(list.reduce((m, x) => ({ ...m, [x.term]: (m[x.term] || 0) + 1 }), {})).map(([t, n]) => `${t} ${n}`).join(', ') || 'aucun';
+  lines.push(`termes sensibles affichés (E9, ${termsBlocking ? 'bloquant' : 'relevé'}) : ${count(sensitive)}`);
+  for (const x of sensitive.slice(0, 12)) lines.push(`  ${x.lang} « ${x.term} » : ${x.text.slice(0, 120)}`);
+  lines.push(`pour information : ${count(info)}`);
+  if (termsBlocking && sensitive.length) problems.push(`${sensitive.length} message(s) affiché(s) avec un terme sensible`);
+  return { ok: problems.length === 0, lines, problems };
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts.site || !opts.out) { console.error('usage : node smoke.mjs --site <dossier> --out <dossier>'); return 2; }
@@ -265,6 +316,14 @@ async function main() {
   if (opts.sabotageCsp) cspHashes = ["'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='"];
   console.log(`Chrome : ${chrome} ; empreintes CSP : ${cspHashes.join(' ') || 'aucune'}`);
   const results = [];
+  let codeSymbols = new Map();
+  if (opts.renderAudit) {
+    const rs = auditRust(opts.repo);
+    codeSymbols = rs.symbols;
+    const last = opts.scenarios[opts.scenarios.length - 1];
+    last.audit = true;
+    last.probe = [...codeSymbols.keys()].join('') + EMOJI_SAMPLES;
+  }
   for (const sc of opts.scenarios) {
     const r = await scenario(opts, chrome, sc, cspHashes);
     results.push(r);
@@ -278,6 +337,19 @@ async function main() {
     for (const w of r.warnings.slice(0, 20)) console.log(`avertissement ${w}`);
     for (const l of r.appLog.slice(0, 15)) console.log(`journal ${l}`);
     if (r.chromeStderr) for (const l of r.chromeStderr) console.log(`chrome ${l}`);
+    if (sc.audit) {
+      if (!r.renderAudit) {
+        r.ok = false;
+        console.log('ÉCHEC audit de rendu : web.renderAudit sans résultat');
+      } else {
+        const j = judgeRender(r.renderAudit, codeSymbols, opts.termsBlocking);
+        r.render = j;
+        console.log(`\n== Audit de rendu (E10) et des termes (E9) : ${j.ok ? 'OK' : 'ÉCHEC'}`);
+        for (const l of j.lines) console.log(l);
+        for (const p of j.problems) console.log(`PROBLÈME ${p}`);
+        if (!j.ok) r.ok = false;
+      }
+    }
   }
   await writeFile(join(opts.out, 'smoke.json'), JSON.stringify(results, null, 2));
   const ok = results.every((r) => r.ok);

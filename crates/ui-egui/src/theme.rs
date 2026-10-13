@@ -280,10 +280,25 @@ pub fn font_definitions(craft: &'static [lightcraft_engine::CraftFont]) -> FontD
     font_definitions_with_chinese(craft, None)
 }
 
+/// egui's emoji face (monochrome Noto Emoji), one of its bundled defaults.
+pub const EMOJI_FACE: &str = "NotoEmoji-Regular";
+
+/// egui's bundled faces without its emoji face. Evora (E10, "zero emoji" directive): no UI family
+/// falls back on an emoji face, and the face is not even loaded; the symbols the UI uses (★ ⌘ ⇧ →…)
+/// come from text faces, which the web build's render audit (`web.renderAudit`) checks.
+pub fn base_definitions() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.remove(EMOJI_FACE);
+    for names in fonts.families.values_mut() {
+        names.retain(|name| name != EMOJI_FACE);
+    }
+    fonts
+}
+
 /// The web build keeps the large Simplified Chinese face outside the size-limited WASM module.
 /// Prefer it for Chinese UI text, including Traditional Chinese until it has its own face.
 pub fn font_definitions_with_chinese(craft: &'static [lightcraft_engine::CraftFont], chinese: Option<&Arc<FontData>>) -> FontDefinitions {
-    let mut fonts = FontDefinitions::default();
+    let mut fonts = base_definitions();
     fonts.font_data.insert("Inter".into(), Arc::new(FontData::from_static(include_bytes!("../../../assets/fonts/Inter-Regular.ttf"))));
     fonts.font_data.insert("Inter-SemiBold".into(), Arc::new(FontData::from_static(include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"))));
     // Craft-fonts faces in preference order for a family drawn in `style`.
@@ -508,6 +523,16 @@ mod tests {
         });
     }
 
+    /// Evora (E10): no UI family falls back on egui's emoji face, and the face is not loaded.
+    #[test]
+    fn no_ui_family_uses_the_emoji_face() {
+        let definitions = font_definitions(lightcraft_engine::CRAFT_FONTS);
+        assert!(!definitions.font_data.contains_key(EMOJI_FACE));
+        for (family, names) in &definitions.families {
+            assert!(!names.iter().any(|name| name == EMOJI_FACE), "{family:?}");
+        }
+    }
+
     #[test]
     fn native_chinese_face_falls_back_after_default_faces() {
         static FACES: &[lightcraft_engine::CraftFont] = &[
@@ -526,7 +551,7 @@ mod tests {
         ];
         set_language(Locale::ZhHans);
         let definitions = font_definitions(FACES);
-        let defaults = FontDefinitions::default();
+        let defaults = base_definitions();
         let default_prop = defaults.families.get(&FontFamily::Proportional).expect("default proportional fonts");
         let chinese = "craft-fonts Noto Sans CJK SC Regular";
         for (family, primary) in [(FontFamily::Proportional, "Inter"), (FontFamily::Name(FONT_SEMIBOLD.into()), "Inter-SemiBold")] {
@@ -558,7 +583,7 @@ mod tests {
         let chinese = Arc::new(FontData::from_static(source));
         set_language(Locale::ZhHans);
         let definitions = font_definitions_with_chinese(JAPANESE, Some(&chinese));
-        let default_count = FontDefinitions::default().families.get(&FontFamily::Proportional).map_or(0, Vec::len);
+        let default_count = base_definitions().families.get(&FontFamily::Proportional).map_or(0, Vec::len);
         for (family, primary) in [(FontFamily::Proportional, "Inter"), (FontFamily::Name(FONT_SEMIBOLD.into()), "Inter-SemiBold")] {
             let names = definitions.families.get(&family).expect("UI font family");
             assert_eq!(names.first().map(String::as_str), Some(primary));

@@ -662,12 +662,13 @@ impl WebApp {
         })
     }
 
-    fn run_inbox(&mut self) {
+    fn run_inbox(&mut self, ctx: &egui::Context) {
         let inbox = INBOX.with(|q| std::mem::take(&mut *q.borrow_mut()));
         for (id, params, (resolve, reject)) in inbox {
             let r = match crate::automation::params(&params) {
                 Err(e) => Err(format!("{id}: {e}")),
                 Ok(_) if id == "web.stats" => Ok(self.web_stats()),
+                Ok(params) if id == "web.renderAudit" => Ok(render_audit(ctx, &params)),
                 Ok(params) => self.app.run(&id, params),
             };
             let _ = match r {
@@ -678,13 +679,91 @@ impl WebApp {
     }
 }
 
+/// Characters worth auditing in displayed text: General Punctuation through Miscellaneous Symbols
+/// and Arrows, variation selectors, fullwidth forms and the emoji planes (CJK text is left out).
+fn audited_char(c: char) -> bool {
+    matches!(c as u32, 0x2010..=0x2BFF | 0xFE00..=0xFE0F | 0xFF00..=0xFFEF | 0x1F000..=0x1FAFF)
+}
+
+/// Evora (E10, E9): what this module displays, measured in the running page. Every catalog message
+/// in every language as `tr` shows it: the symbols it uses and whether the live UI fonts paint them,
+/// and the sensitive terms (`params.terms`) still visible after the display overrides. `params.probe`
+/// lists more characters to check (the code's own symbols, sample emoji). Each character also gets
+/// the faces that paint it, measured face by face on a separate context with the UI's faces.
+fn render_audit(ctx: &egui::Context, params: &serde_json::Value) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    use lightcraft_ui_egui::i18n::{Locale, displayed_messages};
+    let terms: Vec<&str> = params["terms"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+    let probe: Vec<char> = params["probe"].as_str().unwrap_or_default().chars().filter(|c| !c.is_whitespace()).collect();
+    let mut symbols: BTreeMap<char, usize> = BTreeMap::new();
+    let mut sensitive = Vec::new();
+    let mut messages = serde_json::Map::new();
+    for &language in Locale::ALL {
+        let texts = displayed_messages(language);
+        messages.insert(language.code().to_string(), texts.len().into());
+        for text in texts {
+            for c in text.chars().filter(|c| audited_char(*c)) {
+                *symbols.entry(c).or_default() += 1;
+            }
+            for term in &terms {
+                if text.contains(*term) && sensitive.len() < 300 {
+                    sensitive.push(json!({"lang": language.code(), "term": term, "text": text}));
+                }
+            }
+        }
+    }
+    let mut chars: Vec<char> = symbols.keys().copied().chain(probe.iter().copied()).collect();
+    chars.sort_unstable();
+    chars.dedup();
+    let ui_font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+    let live: BTreeMap<char, bool> = ctx.fonts_mut(|fonts| chars.iter().map(|c| (*c, fonts.has_glyph(&ui_font, *c))).collect());
+    // face by face, on a separate context loaded with the UI's faces (no Chinese face: CJK is out of scope)
+    let mut defs = lightcraft_ui_egui::theme::font_definitions(lightcraft_engine::CRAFT_FONTS);
+    let proportional = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+    let faces: Vec<String> = defs.font_data.keys().cloned().collect();
+    let family_of = |face: &str| egui::FontFamily::Name(format!("evora-probe {face}").into());
+    for face in &faces {
+        defs.families.insert(family_of(face.as_str()), vec![face.clone()]);
+    }
+    let probe_ctx = egui::Context::default();
+    probe_ctx.set_fonts(defs);
+    let _ = probe_ctx.run_ui(egui::RawInput::default(), |_| {});
+    let by_face: BTreeMap<char, Vec<String>> = probe_ctx.fonts_mut(|fonts| {
+        chars
+            .iter()
+            .map(|c| {
+                let painted: Vec<String> =
+                    faces.iter().filter(|face| fonts.has_glyph(&egui::FontId::new(13.0, family_of(face.as_str())), *c)).cloned().collect();
+                (*c, painted)
+            })
+            .collect()
+    });
+    let row = |c: char| {
+        json!({
+            "c": c.to_string(),
+            "cp": format!("U+{:04X}", u32::from(c)),
+            "n": symbols.get(&c).copied().unwrap_or(0),
+            "paint": live.get(&c).copied().unwrap_or(false),
+            "faces": by_face.get(&c).cloned().unwrap_or_default(),
+        })
+    };
+    json!({
+        "proportional": proportional,
+        "faces": faces,
+        "messages": messages,
+        "symbols": symbols.keys().map(|c| row(*c)).collect::<Vec<_>>(),
+        "probe": probe.iter().map(|c| row(*c)).collect::<Vec<_>>(),
+        "sensitive": sensitive,
+    })
+}
+
 impl eframe::App for WebApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         for text in safety::take_notices() {
             let now = ctx.input(|i| i.time);
             self.app.ui.toast = Some((text, now + NOTICE_SECS, None));
         }
-        self.run_inbox();
+        self.run_inbox(ctx);
         self.import_dropped(ctx);
         self.load_originals(ctx);
         if let Some(w) = &self.workers {
