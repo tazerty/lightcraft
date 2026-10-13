@@ -14,3 +14,11 @@ accepted = [
 targets = ["wasm32-unknown-unknown"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
+
+# Exceptions par crate (mêmes que deny.toml) : licences de polices des polices embarquées par egui,
+# et licence IJG de l'encodeur JPEG (mention exigée, faite par ce fichier).
+[epaint_default_fonts]
+accepted = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+[jpeg-encoder]
+accepted = ["IJG"]

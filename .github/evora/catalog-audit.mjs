@@ -4,10 +4,16 @@
 //
 // Lit les catalogues de messages (crates/ui-egui/locales/*.json : clés = texte source anglais,
 // valeurs = traductions) et les chaînes littérales du code d'interface, et compte les émojis.
-// Un émoji est un caractère de propriété Unicode « Emoji » (sauf les chiffres, #, *, ©, ®, ™, qui
-// sont du texte par défaut), ou un sélecteur de présentation (U+FE0F), un ZWJ (U+200D) ou un
-// keycap (U+20E3). Les autres symboles (★ → ⌘ ⇧ ≤…) sont inventoriés sans être interdits : leur
-// rendu est vérifié à part.
+//
+// Classement (directive « zéro émoji d'interface ») : est un émoji
+//   - tout caractère de propriété Unicode Emoji_Presentation (affiché en émoji par défaut : ✅ ⭐ 😀) ;
+//   - tout autre caractère de propriété Emoji, sauf le texte typographique : chiffres, #, *, © ® ™,
+//     et les blocs Flèches (U+2190–21FF), Signes techniques (U+2300–23FF), Formes géométriques
+//     (U+25A0–25FF), Flèches supplémentaires B (U+2900–297F), Symboles et flèches divers
+//     (U+2B00–2BFF) — ⚠ ✔ ✖ ♥ ‼ ℹ sont donc des émojis, ↖ ▶ ⌨ ⬅ n'en sont pas ;
+//   - les sélecteurs de présentation (U+FE0F), le ZWJ (U+200D) et le keycap (U+20E3).
+// Les autres symboles (★ ✓ ✕ → ⌘ ⇧ ≤…) sont inventoriés sans être interdits : leur rendu par une
+// police de texte est vérifié au rendu (test de fumée, commande web.renderAudit).
 //
 // Usage :
 //   node catalog-audit.mjs <racine-du-dépôt> [--rust-blocking] [--summary FICHIER]
@@ -20,18 +26,23 @@ import { tmpdir } from 'node:os';
 
 const LOCALES = 'crates/ui-egui/locales';
 const RUST_DIRS = ['crates/ui-egui/src', 'apps/lightcraft-web/src'];
-const TEXT_DEFAULT = new Set(['#', '*', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '©', '®', '™']);
-const PRESENTATION = new Set(['️', '‍', '⃣']);
+const TEXT_DEFAULT = new Set(['#', '*', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '\u00A9', '\u00AE', '\u2122']);
+const PRESENTATION = new Set(['\uFE0F', '\u200D', '\u20E3']);
 const EMOJI_RE = /\p{Emoji}/u;
+const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
 const SYMBOL_RE = /\p{S}/u;
+const TYPOGRAPHIC_BLOCKS = [[0x2190, 0x21ff], [0x2300, 0x23ff], [0x25a0, 0x25ff], [0x2900, 0x297f], [0x2b00, 0x2bff]];
 
 export function isEmoji(ch) {
   if (PRESENTATION.has(ch)) return true;
   if (TEXT_DEFAULT.has(ch)) return false;
-  return EMOJI_RE.test(ch);
+  if (EMOJI_PRESENTATION_RE.test(ch)) return true;
+  if (!EMOJI_RE.test(ch)) return false;
+  const c = ch.codePointAt(0);
+  return !TYPOGRAPHIC_BLOCKS.some(([lo, hi]) => c >= lo && c <= hi);
 }
 
-function isSymbol(ch) {
+export function isSymbol(ch) {
   return ch.codePointAt(0) >= 0x2000 && SYMBOL_RE.test(ch) && !isEmoji(ch);
 }
 
@@ -150,11 +161,11 @@ function selftest() {
   };
   const trapped = mk('piege', { 'Done ✅': 'Fait', 'Rate ★': 'Noter ★', 'Play': 'Lire ▶️' },
     'fn f() {\n  let a = "⚠ warn";\n  // "\u{1F600}" dans un commentaire\n}\n#[cfg(test)]\nmod tests { const X: &str = "✅"; }\n');
-  const clean = mk('temoin', { 'Rate ★': 'Noter ★ → ⌘', 'Undo (⌘Z)': '⇧⌥ ≤ ≥' },
-    'fn f() {\n  let a = "Edit ▸ Undo → © 2026";\n}\n');
+  const clean = mk('temoin', { 'Rate ★': 'Noter ★ → ⌘', 'Undo (⌘Z)': '⇧⌥ ≤ ≥ ✓ ✕' },
+    'fn f() {\n  let a = "Edit ▸ Undo → © 2026 ↖ ▶ ⌨";\n}\n');
   const checks = [];
   const t = report(trapped, true);
-  checks.push(['catalogue piégé : 3 émojis (✅, ▶, U+FE0F)', t.cat.emoji.length === 3]);
+  checks.push(['catalogue piégé : 2 émojis (✅ et le sélecteur U+FE0F de ▶️ ; ▶ seul est typographique)', t.cat.emoji.length === 2]);
   checks.push(['catalogue piégé : ★ inventorié, non interdit', t.cat.symbols.has('★')]);
   checks.push(['code piégé : 1 émoji (⚠), commentaire et module de test ignorés', t.rs.emoji.length === 1]);
   checks.push(['dépôt piégé : la porte rougit', t.failed === true]);

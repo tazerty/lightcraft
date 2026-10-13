@@ -186,8 +186,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --locked --color never \
-            check --config .github/evora/deny.toml --show-stats advisories licenses sources 2>&1 | tee "$RUNNER_TEMP/cargo-deny.txt"
+          cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --config .github/evora/deny.toml --locked --color never \
+            check --show-stats advisories licenses sources 2>&1 | tee "$RUNNER_TEMP/cargo-deny.txt"
 
       - name: Porte cargo-about — LICENSES/ des crates tierces
         id: g_about
