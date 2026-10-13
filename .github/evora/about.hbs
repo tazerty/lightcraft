@@ -1,0 +1,25 @@
+Revela (moteur web) : licences des composants tiers (crates Rust)
+=================================================================
+
+Liste générée par cargo-about pour la crate apps/lightcraft-web et la cible wasm32-unknown-unknown
+(dépendances de build et de développement exclues). Les licences de LightCraft lui-même, de ses
+polices et de ses données sont dans les autres fichiers de ce dossier.
+
+Vue d'ensemble
+--------------
+{{#each overview}}
+- {{name}} ({{id}}) : {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{name}} ({{id}})
+--------------------------------------------------------------------------------
+Utilisée par :
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
