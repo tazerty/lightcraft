@@ -86,6 +86,8 @@ struct Options {
     /// Evora (E5): the storage namespace the host gives (`?storageNs=`, an opaque id): a
     /// namespace, not a partition (see `backend::NS_PREFIX`).
     storage_ns: Option<String>,
+    /// Evora (E2): `light` or `dark`, Evora's identity in that appearance (`?theme=`).
+    theme: Option<String>,
 }
 
 impl Options {
@@ -108,6 +110,7 @@ impl Options {
             reset: get("reset").is_some(),
             lang: get("lang").filter(|v| !v.is_empty() && v.len() <= 35),
             storage_ns: get("storageNs"),
+            theme: get("theme"),
         }
     }
 }
@@ -476,6 +479,16 @@ impl WebApp {
             app.ui.language = host_language(tag);
             log::info!("lightcraft: UI language {} imposed by the host (lang={tag})", app.ui.language.code());
         }
+        // Evora (E2): the host's identity, light or dark, over the app's own themes.
+        match opts.theme.as_deref() {
+            Some(mode @ ("light" | "dark")) => {
+                lightcraft_ui_egui::theme::set_evora_palette(true);
+                app.ui.settings.appearance_mode =
+                    if mode == "dark" { lightcraft_ui_egui::state::AppearanceMode::Dark } else { lightcraft_ui_egui::state::AppearanceMode::Light };
+            }
+            Some(other) => log::warn!("lightcraft: unknown theme {other:?} (light or dark); the app's own theme stays"),
+            None => {}
+        }
         app.library_problem = problem;
         let n = opts.workers.unwrap_or_else(|| {
             let cores = window().map_or(1, |w| w.navigator().hardware_concurrency() as usize);
@@ -663,10 +676,18 @@ impl WebApp {
     }
 
     fn web_stats(&self) -> serde_json::Value {
+        // the theme the app shows (E2), worked out from its settings as `sync_theme` does
+        let theme = self.app.ui.settings.theme(None);
+        let accent = lightcraft_ui_egui::theme::Tokens::for_kind(theme).accent;
         let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
         let (orig_n, orig_bytes) = self.originals.usage();
         json!({
             "language": self.app.ui.language,
+            "theme": {
+                "evora": lightcraft_ui_egui::theme::evora_palette(),
+                "dark": theme.is_dark(),
+                "accent": format!("#{:02x}{:02x}{:02x}", accent.r(), accent.g(), accent.b()),
+            },
             "namespace": self.storage_ns,
             "storage": self.backend.as_ref().map_or("memory", |b| b.kind()),
             "library": self.lib_dir,
