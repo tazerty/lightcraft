@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT
+# Evora — configuration de cargo-deny pour l'artefact web (crate apps/lightcraft-web, cible wasm32).
+# L'amont n'a pas de deny.toml : celui-ci est minimal et ne relâche aucun niveau par défaut de
+# cargo-deny ; toute exception y est nommée, avec sa raison. Lancé par .github/workflows/evora-web.yml :
+#   cargo deny --manifest-path apps/lightcraft-web/Cargo.toml --locked check --config .github/evora/deny.toml advisories licenses sources
+
+[graph]
+# Le graphe de ce qui est réellement livré : la crate web pour la cible du navigateur, sans les
+# dépendances de développement.
+targets = [{ triple = "wasm32-unknown-unknown" }]
+all-features = false
+no-default-features = false
+exclude-dev = true
+
+[advisories]
+# Valeurs par défaut de cargo-deny (vulnérabilités, avis « unmaintained » sur tout le graphe) :
+# aucune n'est relâchée, aucun avis n'est ignoré.
+ignore = []
+
+[licenses]
+# Licences permissives admises pour tout le graphe. Rien de copyleft : une crate sous une autre
+# licence fait échouer la porte, jusqu'à une exception nommée ci-dessous.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[sources]
+# Seuls crates.io et la dépendance git épinglée de l'amont (storytold/craft-libs, révision du Cargo.lock).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/storytold/craft-libs"]
