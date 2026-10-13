@@ -245,8 +245,28 @@ export function measureSize(dir, zip) {
   };
 }
 
+// --- Hôtes externes cités par le bundle (E7, relevé : la CSP connect-src 'self' les bloque) ----
+export function externalHosts(dir) {
+  const files = walk(dir).filter((e) => e.kind === 'file' && !inLicenses(e.rel) && !isCompressedCopy(e.rel) && /\.(wasm|js|html)$/.test(e.rel));
+  const hosts = new Map();
+  for (const f of files) {
+    const text = readFileSync(f.abs).toString('latin1');
+    for (const m of text.matchAll(/https?:\/\/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/gi)) {
+      const h = m[1].toLowerCase();
+      hosts.set(h, (hosts.get(h) || 0) + 1);
+    }
+  }
+  const list = [...hosts.entries()].sort((a, b) => b[1] - a[1]);
+  return {
+    name: 'Hôtes externes cités par le bundle (E7, relevé)',
+    ok: true,
+    metrics: { hosts: Object.fromEntries(list) },
+    details: [list.length ? list.map(([h, n]) => `${h} ×${n}`).join(', ') : 'aucun'],
+  };
+}
+
 export function checkAll(dir, zip) {
-  return [gateBrands(dir), gateHosting(dir, zip), gateCompression(dir), gateCsp(dir), measureSize(dir, zip)];
+  return [gateBrands(dir), gateHosting(dir, zip), gateCompression(dir), gateCsp(dir), measureSize(dir, zip), externalHosts(dir)];
 }
 
 function render(results, title) {
