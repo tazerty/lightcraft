@@ -53,7 +53,9 @@ env:
 jobs:
   web:
     name: Web (wasm) Evora
-    runs-on: ubuntu-latest
+    # Image épinglée : le libellé ubuntu-latest bascule vers Ubuntu 26 à partir du 2026-10-19
+    # (avis de GitHub dans les journaux) ; Chrome et Node du test de fumée viennent de cette image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
       run:
@@ -292,6 +294,7 @@ jobs:
             echo "craft-fonts: $CRAFT_FONTS_REV"
             echo "cargo-deny: $(cargo-deny --version) ; cargo-about: $(cargo-about --version)"
             echo "wasm-opt: $(command -v wasm-opt >/dev/null && wasm-opt --version || echo absent)"
+            echo "image du runner: ${ImageOS:-?} ${ImageVersion:-?} ; node: $(node --version) ; chrome: $(google-chrome --version 2>/dev/null || echo absent)"
             echo "exécution: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (essai $GITHUB_RUN_ATTEMPT)"
             echo "date UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "sha256 $NAME.zip: $(sha256sum "$OUT/$NAME.zip" | cut -d' ' -f1)"
