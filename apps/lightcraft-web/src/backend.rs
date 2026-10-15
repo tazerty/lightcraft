@@ -12,17 +12,6 @@ use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDire
 const IDB_NAME: &str = "lightcraft";
 const IDB_STORE: &str = "files";
 
-/// Evora (E5): a storage namespace is an opaque id the host passes (`?storageNs=`): the library
-/// lives in the OPFS directory `ns-<id>`, or the IndexedDB database `lightcraft-ns-<id>`. It is a
-/// NAMESPACE, NOT A PARTITION: any script of this origin can still list and read every namespace;
-/// the isolation between accounts comes from serving the engine on its own origin.
-pub const NS_PREFIX: &str = "ns-";
-
-/// An id the host may use as a namespace: 1 to 64 ASCII letters, digits, `-` or `_`.
-pub fn valid_namespace(ns: &str) -> bool {
-    !ns.is_empty() && ns.len() <= 64 && ns.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
 #[derive(Clone)]
 pub enum Backend {
     Opfs(FileSystemDirectoryHandle),
@@ -102,37 +91,23 @@ async fn idb_done(tx: &web_sys::IdbTransaction) -> Result<(), String> {
 }
 
 impl Backend {
-    /// OPFS if writable from here (unless `prefer_idb`), else IndexedDB; inside namespace `ns`
-    /// when the host gave one (E5).
-    pub async fn open(prefer_idb: bool, ns: Option<&str>) -> Result<Backend, String> {
-        if let Some(ns) = ns
-            && !valid_namespace(ns)
-        {
-            return Err(format!("invalid storage namespace {ns:?}"));
-        }
+    /// OPFS if writable from here (unless `prefer_idb`), else IndexedDB.
+    pub async fn open(prefer_idb: bool) -> Result<Backend, String> {
         if !prefer_idb
             && opfs_writable()
             && let Some(sm) = storage_manager()
         {
             match JsFuture::from(sm.get_directory()).await {
-                Ok(root) => {
-                    let root: FileSystemDirectoryHandle = root.unchecked_into();
-                    let Some(ns) = ns else { return Ok(Backend::Opfs(root)) };
-                    let opts = FileSystemGetDirectoryOptions::new();
-                    opts.set_create(true);
-                    let dir = JsFuture::from(root.get_directory_handle_with_options(&format!("{NS_PREFIX}{ns}"), &opts)).await.map_err(err)?;
-                    return Ok(Backend::Opfs(dir.unchecked_into()));
-                }
+                Ok(root) => return Ok(Backend::Opfs(root.unchecked_into())),
                 Err(e) => log::warn!("OPFS unavailable ({}); using IndexedDB", err(e)),
             }
         }
-        Self::open_idb(ns).await
+        Self::open_idb().await
     }
 
-    async fn open_idb(ns: Option<&str>) -> Result<Backend, String> {
+    async fn open_idb() -> Result<Backend, String> {
         let f = indexed_db().ok_or("no IndexedDB")?;
-        let name = ns.map_or_else(|| IDB_NAME.to_string(), |ns| format!("{IDB_NAME}-{NS_PREFIX}{ns}"));
-        let req = f.open_with_u32(&name, 1).map_err(err)?;
+        let req = f.open_with_u32(IDB_NAME, 1).map_err(err)?;
         let upgrade = Closure::<dyn FnMut(web_sys::IdbVersionChangeEvent)>::new(move |e: web_sys::IdbVersionChangeEvent| {
             if let Some(db) = e.target().and_then(|t| t.dyn_into::<web_sys::IdbOpenDbRequest>().ok()).and_then(|r| r.result().ok()) {
                 let db: IdbDatabase = db.unchecked_into();

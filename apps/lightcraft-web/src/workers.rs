@@ -62,18 +62,16 @@ thread_local! {
 }
 
 /// Entry point of a render worker (called by `worker.js` after instantiating the module).
-/// `store` is the backend kind the page uses ("opfs", "idb" or "memory"), followed by
-/// `:<namespace>` when the host gave a storage namespace (E5).
+/// `store` is the backend kind the page uses ("opfs", "idb" or "memory").
 #[wasm_bindgen]
 pub fn worker_main(store: String) {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     let scope: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
     // The main thread sends jobs only after "ready", i.e. once storage is open, and one at a time.
     wasm_bindgen_futures::spawn_local(async move {
-        let (kind, ns) = store.split_once(':').map_or((store.as_str(), None), |(kind, ns)| (kind, Some(ns)));
-        let backend = match kind {
+        let backend = match store.as_str() {
             "memory" => None,
-            _ => Backend::open(kind == "idb", ns).await.map_err(|e| log::warn!("render worker: no storage ({e})")).ok(),
+            _ => Backend::open(store == "idb").await.map_err(|e| log::warn!("render worker: no storage ({e})")).ok(),
         };
         let s = scope.clone();
         let onmessage = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
@@ -303,35 +301,6 @@ impl Workers {
             slots.commit();
         }
         w
-    }
-
-    /// Evora (E5): stop every worker at once (storage purge), so that nothing rendered from now on
-    /// is written to browser storage: their pending jobs come back as errors (the page renders
-    /// inline from then on, as after a worker failure) and the thumbnail store is dropped.
-    pub fn terminate_all(&self) {
-        let mut g = self.0.borrow_mut();
-        let g = &mut *g;
-        g.backend = None;
-        for w in &mut g.workers {
-            w.dead = true;
-            w.worker.terminate();
-            if let Some(b) = w.busy.take() {
-                let r = RenderResult {
-                    request_id: b.request_id,
-                    source_key: None,
-                    photo: b.photo,
-                    level: b.level,
-                    key: b.key,
-                    rendered: Err("render workers stopped (storage purge)".to_string()),
-                    gpu_fallback: None,
-                    loaded: None,
-                    quick: None,
-                    display: None,
-                };
-                g.done.push((b.slot, r, 0.0));
-            }
-        }
-        g.ctx.request_repaint();
     }
 
     fn on_error(&self, i: usize, e: JsValue) {

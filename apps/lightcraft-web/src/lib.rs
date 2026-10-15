@@ -14,8 +14,9 @@
 //! console (see [`bench`]); `?store=idb` forces the IndexedDB backend, `?store=memory` disables
 //! persistence and `?workers=0` renders on the main thread.
 //!
-//! Evora: `?host=evora` makes the page the engine of Evora's Revela (the Evora host protocol with
-//! the parent page `evora-host.json` admits; see `ehp`).
+//! Evora: `?host=evora` makes the page the engine of Evora's Revela (memory mode, the Evora host
+//! protocol with the parent page `evora-host.json` admits, purges asked by the host only; see
+//! `ehp`, `purge` and [`storage_names`]).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -23,6 +24,7 @@ pub mod automation;
 pub mod backup;
 pub mod bench;
 pub mod files;
+pub mod storage_names;
 pub mod store;
 pub mod wire;
 
@@ -30,6 +32,8 @@ pub mod wire;
 mod backend;
 #[cfg(target_arch = "wasm32")]
 mod ehp;
+#[cfg(target_arch = "wasm32")]
+mod purge;
 #[cfg(target_arch = "wasm32")]
 mod safety;
 #[cfg(target_arch = "wasm32")]

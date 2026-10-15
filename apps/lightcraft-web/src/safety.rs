@@ -92,15 +92,10 @@ pub fn install_panic_hook() {
 /// The name of the lock that keeps a library to one tab.
 const TAB_LOCK: &str = "lightcraft-library";
 
-/// The lock's name for storage namespace `ns` (E5): one library per tab and per namespace.
-pub fn tab_lock_name(ns: Option<&str>) -> String {
-    ns.map_or_else(|| TAB_LOCK.to_string(), |ns| format!("{TAB_LOCK}-{}{ns}", crate::backend::NS_PREFIX))
-}
-
-/// Hold the library lock `name` for as long as this page lives (Web Locks API). `Some(true)`: ours;
+/// Hold the library lock for as long as this page lives (Web Locks API). `Some(true)`: ours;
 /// `Some(false)`: another tab of this site has it; `None`: the browser can't tell (no Web Locks, or
 /// it refused the request).
-pub async fn acquire_tab_lock(name: &str) -> Option<bool> {
+pub async fn acquire_tab_lock() -> Option<bool> {
     let nav = Reflect::get(&js_sys::global(), &"navigator".into()).ok()?;
     let locks = Reflect::get(&nav, &"locks".into()).ok().filter(|l| !l.is_undefined() && !l.is_null())?;
     let request: js_sys::Function = Reflect::get(&locks, &"request".into()).ok()?.dyn_into().ok()?;
@@ -114,7 +109,7 @@ pub async fn acquire_tab_lock(name: &str) -> Option<bool> {
             if ours { js_sys::Promise::new(&mut |_, _| {}).into() } else { JsValue::NULL }
         });
         // a refused request never calls `cb`: settle with its error instead of waiting forever
-        match request.call3(&locks, &name.into(), &opts, &cb) {
+        match request.call3(&locks, &TAB_LOCK.into(), &opts, &cb) {
             Ok(pending) => {
                 let catch = Reflect::get(&pending, &"catch".into()).ok().and_then(|c| c.dyn_into::<js_sys::Function>().ok());
                 if let Some(catch) = catch {
