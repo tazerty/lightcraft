@@ -53,8 +53,10 @@ function parseArgs(argv) {
       { name: 'defaut', query: '', lang: 'en', theme: { evora: false, dark: true, accent: '#0165dd' } },
       { name: 'memoire-zh-Hans', query: '?store=memory&lang=zh-Hans', lang: 'zh-hans' },
       { name: 'pt-sans-variante', query: '?store=memory&lang=pt', lang: 'en' },
-      // E5 : espace de noms de stockage (OPFS), contrôlé puis purgé par web.purgeStorage
-      { name: 'espace-de-noms', query: '?storageNs=evoraTest1&lang=de&theme=dark', lang: 'de', ns: 'evoraTest1', theme: { evora: true, dark: true, accent: '#4f46e5' } },
+      // E5 (correctif) : l'espace de noms n'arrive plus par l'URL mais par evora:init, et la purge
+      // seulement par evora:purge ou evora:init (scénario du pont EHP). Hors pont, comportement amont
+      // inchangé : ?storageNs= est ignoré, la bibliothèque s'écrit où l'amont l'écrit.
+      { name: 'hors-pont', query: '?storageNs=evoraTest1&lang=de&theme=dark', lang: 'de', upstreamStorage: true, theme: { evora: true, dark: true, accent: '#4f46e5' } },
       { name: 'francais', query: '?store=memory&lang=fr&theme=light', lang: 'fr', theme: { evora: true, dark: false, accent: '#4f46e5' } },
     ];
   }
@@ -129,19 +131,14 @@ class Cdp {
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const withTimeout = (p, ms, what) => Promise.race([p, sleep(ms).then(() => { throw new Error(`${what} : pas de réponse en ${ms} ms`); })]);
 
-// E5 : ce que l'origine moteur garde dans le navigateur, avant et après la purge de l'espace de noms.
-const nsProbe = (ns) => `(async () => {
+// E5 hors pont : ce que l'origine moteur garde dans le navigateur (racine OPFS, bases IndexedDB,
+// clés localStorage), lu sans rien créer.
+const STORAGE_PROBE = `(async () => {
   const root = await navigator.storage.getDirectory();
-  const list = async (d) => { const out = []; for await (const [n, h] of d.entries()) out.push(n + (h.kind === 'directory' ? '/' : '')); return out.sort(); };
-  const inside = async () => { try { return await list(await root.getDirectoryHandle('ns-${ns}')); } catch (e) { return ['<absent>']; } };
-  const top = await list(root);
-  const before = await inside();
-  const dbs = indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : ['<inconnu>'];
-  const ls = localStorage.length;
-  const purge = JSON.parse(await globalThis.lightcraft.command('web.purgeStorage', '{}'));
-  await new Promise((r) => setTimeout(r, 2000));
-  const after = await inside();
-  return JSON.stringify({ top, before, dbs, ls, purge, after });
+  const opfs = [];
+  for await (const [n, h] of root.entries()) opfs.push(n + (h.kind === 'directory' ? '/' : ''));
+  const idb = indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : ['<inconnu>'];
+  return JSON.stringify({ opfs: opfs.sort(), idb: idb.sort(), ls: Object.keys(localStorage).sort() });
 })()`;
 
 // Sonde évaluée dans l'iframe du moteur.
@@ -270,19 +267,21 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
         expression: `(() => { const g = document.createElement('canvas').getContext('webgl2'); if (!g) return 'aucun'; const d = g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER); })()`,
         returnByValue: true }, frameSession);
       result.webgl2 = webgl.result?.value;
-      if (sc.ns) {
-        const r = await withTimeout(cdp.send('Runtime.evaluate', { expression: nsProbe(sc.ns), awaitPromise: true, returnByValue: true }, frameSession), 30000, 'sonde de stockage');
-        if (r.exceptionDetails) errors.push(`sonde de stockage : ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
-        else {
-          const st = JSON.parse(r.result.value);
-          result.storage = st;
-          const want = `ns-${sc.ns}/`;
-          if (st.top.length !== 1 || st.top[0] !== want) errors.push(`E5 : racine OPFS ${JSON.stringify(st.top)}, attendu [${want}] seul`);
-          if (!(st.before.length > 0 && st.before[0] !== '<absent>')) errors.push(`E5 : rien d'écrit dans ${want} (${JSON.stringify(st.before)})`);
-          if (st.dbs.includes('lightcraft')) errors.push('E5 : base IndexedDB « lightcraft » hors espace de noms');
-          if (st.ls !== 0) errors.push(`E5 : localStorage non vide (${st.ls})`);
-          if (!st.purge.purging) errors.push(`E5 : purge refusée ${JSON.stringify(st.purge)}`);
-          if (st.after.length !== 0) errors.push(`E5 : ${want} non vide après purge ${JSON.stringify(st.after)}`);
+      if (sc.upstreamStorage) {
+        // l'amont écrit sa bibliothèque à la racine d'OPFS (library/) ; aucun espace de noms venu de l'URL
+        let st = null;
+        for (let i = 0; i < 40; i += 1) {
+          const r = await withTimeout(cdp.send('Runtime.evaluate', { expression: STORAGE_PROBE, awaitPromise: true, returnByValue: true }, frameSession), 15000, 'sonde de stockage');
+          if (r.exceptionDetails) { errors.push(`sonde de stockage : ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`); break; }
+          st = JSON.parse(r.result.value);
+          if (st.opfs.includes('library/') || st.idb.includes('lightcraft')) break;
+          await sleep(500);
+        }
+        result.storage = st;
+        if (st) {
+          const named = [...st.opfs, ...st.idb].filter((n) => /^(lightcraft-)?ns-/.test(n) || n.includes('evoraTest1'));
+          if (named.length) errors.push(`E5 hors pont : espace de noms pris dans l'URL (${JSON.stringify(named)})`);
+          if (!st.opfs.includes('library/') && !st.idb.includes('lightcraft')) errors.push(`E5 hors pont : bibliothèque amont absente du stockage (${JSON.stringify(st)})`);
         }
       }
       if (sc.audit) {
@@ -385,7 +384,7 @@ async function main() {
     console.log(`cibles attachées : ${(r.targets || []).join(', ')} ; WebGL2 : ${r.webgl2 || '?'} ; langue de l'interface : ${r.language ?? '?'}${sc.lang ? ` (attendue ${sc.lang})` : ''} ; thème ${JSON.stringify(r.theme ?? null)}`);
     console.log(`démarrage à froid : prêt à ${s.tReady ? Math.round(s.tReady) : '?'} ms après la navigation de l'iframe (performance.now), ${r.wallMs} ms d'horloge depuis la navigation de la page parente ; première frame UI annoncée par l'app : ${r.appFirstFrameMs ?? '?'} ms`);
     console.log(`état final : canvas ${s.w}x${s.h}, chargement retiré ${s.loading === false}, API ${s.api}, web.stats ${s.stats ? JSON.stringify(s.stats) : 'absent'}${s.probeError ? `, erreur de sonde ${s.probeError}` : ''}${s.status ? `, statut « ${s.status} »` : ''}`);
-    if (r.storage) console.log(`E5 stockage : racine OPFS ${JSON.stringify(r.storage.top)} ; espace de noms avant purge ${JSON.stringify(r.storage.before)} ; bases IndexedDB ${JSON.stringify(r.storage.dbs)} ; localStorage ${r.storage.ls} ; purge ${JSON.stringify(r.storage.purge)} ; après purge ${JSON.stringify(r.storage.after)}`);
+    if (r.storage) console.log(`E5 hors pont, stockage de l'origine moteur : ${JSON.stringify(r.storage)}`);
     for (const e of r.errors) console.log(`ERREUR ${e}`);
     for (const w of r.warnings.slice(0, 20)) console.log(`avertissement ${w}`);
     for (const l of r.appLog.slice(0, 15)) console.log(`journal ${l}`);

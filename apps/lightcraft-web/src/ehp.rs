@@ -16,12 +16,13 @@
 //! `re` matching the `evora:ready` for `evora:init`. Anything else is ignored, unanswered.
 //! Outgoing messages name the admitted parent origin as `targetOrigin`, never `*`, with new ULIDs.
 //!
-//! Handled: `evora:init` (language converted by the host's E3 mapping, theme; `storageNs` checked),
-//! `evora:open` (a photo's bytes, imported in memory and made the active photo; answered once
-//! imported), `evora:lang`, `evora:theme`. Sent: `evora:ready`, `evora:ack`, `evora:failed {code}`
-//! when the engine can't start or stops. Not yet (Revela's target, HOST-PROTOCOL.md §9.2):
-//! `storage.memory` and `storage.purge` (the E5 correction), `doc.save` and `doc.request-save`
-//! (what `evora:save` carries is Revela's open question Q-REV-18), `doc.saved-ack`, `doc.dirty`,
+//! Handled: `evora:init` (language converted by the host's E3 mapping, theme; `storageNs` for the
+//! start-up purge of every other namespace and of the leftovers, §7.7 b), `evora:open` (a photo's
+//! bytes, imported in memory and made the active photo; answered once imported), `evora:lang`,
+//! `evora:theme`, `evora:purge` (answered once the storage is actually empty, [`crate::purge`]).
+//! Sent: `evora:ready`, `evora:ack`, `evora:failed {code}` when the engine can't start or stops.
+//! Not yet (Revela's target, HOST-PROTOCOL.md §9.2): `doc.save` and `doc.request-save` (what
+//! `evora:save` carries is Revela's open question Q-REV-18), `doc.saved-ack`, `doc.dirty`,
 //! `doc.multi`, `export.drive` (REV-02), `pick.drive`, `command` (REV-06).
 
 use std::cell::{Cell, RefCell};
@@ -32,11 +33,15 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+use crate::storage_names::{Scope, valid_namespace};
+
 /// Build slug and protocol version announced in `evora:ready` (§4.4, §10).
 const APP: &str = "revela";
 const EHP: &str = "1.0";
-/// What this engine honours (§9.1).
-pub const CAPABILITIES: [&str; 3] = ["doc.open", "live.lang", "live.theme"];
+/// What this engine honours (§9.1), each exercised by the CI smoke scenario « pont-ehp ».
+/// `storage.memory`: under the host the engine keeps nothing in browser storage. `storage.ns` is
+/// not declared: with nothing stored there is nothing to put in a namespace (Revela's CdC §5.1).
+pub const CAPABILITIES: [&str; 5] = ["doc.open", "storage.memory", "storage.purge", "live.lang", "live.theme"];
 /// The admitted parent origins, next to `index.html` (§2.3).
 const CONFIG: &str = "evora-host.json";
 const LANGS: [&str; 14] = ["ar", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko", "pt", "ru", "tr", "zh-Hans"];
@@ -65,8 +70,8 @@ const MAX_SEEN: usize = 4096;
 
 /// What the host asks of the app, applied on its next frame (`web::WebApp`), which answers it.
 pub enum HostEvent {
-    /// `evora:init`: the engine's language (`None`: English, the host shows its banner) and the
-    /// appearance.
+    /// `evora:init` (after the start-up purge): the engine's language (`None`: English, the host
+    /// shows its banner) and the appearance.
     Init { id: String, lang: Option<String>, dark: bool },
     /// `evora:open`: a photo's bytes and file name.
     Open { id: String, doc_ref: String, name: String, bytes: Vec<u8> },
@@ -78,10 +83,15 @@ struct Link {
     parent: web_sys::Window,
     origin: String,
     ready_id: String,
+    /// `evora:init` accepted (a second one is ignored).
+    init_received: bool,
+    /// `evora:init` applied: the start-up purge is over, the requests of the effective
+    /// capabilities are examined from now on (before, they are ignored, §5.2 step 5).
     initialized: bool,
     /// The effective capabilities: what the host offers in `evora:init` and this engine declares.
     caps: Vec<String>,
     max_document: f64,
+    storage_ns: String,
     seen: VecDeque<String>,
     seen_set: HashSet<String>,
 }
@@ -123,9 +133,11 @@ pub fn connect() {
                 parent,
                 origin,
                 ready_id: String::new(),
+                init_received: false,
                 initialized: false,
                 caps: Vec::new(),
                 max_document: 0.0,
+                storage_ns: String::new(),
                 seen: VecDeque::new(),
                 seen_set: HashSet::new(),
             });
@@ -269,6 +281,7 @@ fn receive(event: web_sys::MessageEvent) {
         "evora:open" => Some("doc.open"),
         "evora:lang" => Some("live.lang"),
         "evora:theme" => Some("live.theme"),
+        "evora:purge" => Some("storage.purge"),
         // unknown here, or a capability this engine doesn't declare: ignored (§4.1, §10)
         _ => return,
     };
@@ -303,6 +316,7 @@ fn receive(event: web_sys::MessageEvent) {
         "evora:open" => on_open(&id, &payload),
         "evora:lang" => on_lang(&id, &payload),
         "evora:theme" => on_theme(&id, &payload),
+        "evora:purge" => on_purge(&id, &payload),
         _ => {}
     }
 }
@@ -332,7 +346,7 @@ fn first_time(id: &str) -> bool {
 }
 
 fn on_init(id: &str, re: &str, p: &JsValue) {
-    let expected = LINK.with(|l| l.borrow().as_ref().is_some_and(|l| !l.initialized && !l.ready_id.is_empty() && l.ready_id == re));
+    let expected = LINK.with(|l| l.borrow().as_ref().is_some_and(|l| !l.init_received && !l.ready_id.is_empty() && l.ready_id == re));
     if !expected {
         return;
     }
@@ -347,7 +361,7 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
     let Some(dark) = theme(&get(p, "theme")) else { return };
     let accent_ok = is_accent(&get(p, "accent"));
     let read_only_ok = get(p, "readOnly").as_bool().is_some();
-    let ns_ok = get(p, "storageNs").as_string().is_some_and(|ns| is_storage_ns(&ns));
+    let Some(ns) = get(p, "storageNs").as_string().filter(|ns| valid_namespace(ns)) else { return };
     let name = get(p, "displayName");
     let name_ok = name.is_undefined() || name.as_string().is_some_and(|n| (1..=100).contains(&n.chars().count()));
     let Some(caps) = string_list(&get(p, "capabilities")) else { return };
@@ -362,19 +376,37 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
         && only_keys(&limits, &["maxDocumentBytes", "maxExportBytes"])
         && [max_document, max_export].iter().all(|m| m.is_some_and(|m| m >= 1.0 && m.fract() == 0.0));
     let Some(max_document) = max_document else { return };
-    if !(lang_ok && accent_ok && read_only_ok && ns_ok && name_ok && caps_ok && prefs_ok && limits_ok) {
+    if !(lang_ok && accent_ok && read_only_ok && name_ok && caps_ok && prefs_ok && limits_ok) {
         return;
     }
     // the effective set: what the host offers and this engine declares (§9)
     let caps: Vec<String> = caps.into_iter().filter(|c| CAPABILITIES.contains(&c.as_str())).collect();
+    let purge = caps.iter().any(|c| c == "storage.purge");
     LINK.with(|l| {
         if let Some(l) = l.borrow_mut().as_mut() {
-            l.initialized = true;
+            l.init_received = true;
             l.caps = caps;
             l.max_document = max_document;
+            l.storage_ns = ns.clone();
         }
     });
-    push(HostEvent::Init { id: id.to_string(), lang: engine_lang, dark });
+    let id = id.to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        // §7.1 step 6 and §7.7 b, before the answer: every namespace but the account's, and the
+        // leftovers outside any namespace, are purged (best effort: a failure is logged, the
+        // leftovers stay those of other sessions, never this page's writes, and the host's next
+        // `evora:purge` is answered by what it achieves). Only then are the host's requests
+        // examined, and the engine configured and the `evora:init` answered on the next frame.
+        if purge {
+            let _ = crate::purge::run(Scope::AllBut(ns)).await;
+        }
+        LINK.with(|l| {
+            if let Some(l) = l.borrow_mut().as_mut() {
+                l.initialized = true;
+            }
+        });
+        push(HostEvent::Init { id, lang: engine_lang, dark });
+    });
 }
 
 fn on_open(id: &str, p: &JsValue) {
@@ -434,6 +466,28 @@ fn on_theme(id: &str, p: &JsValue) {
     push(HostEvent::Theme { id: id.to_string(), dark });
 }
 
+fn on_purge(id: &str, p: &JsValue) {
+    let all = match get(p, "scope").as_string().as_deref() {
+        Some("all") => true,
+        Some("current") => false,
+        _ => return,
+    };
+    if !only_keys(p, &["scope"]) {
+        return;
+    }
+    let ns = LINK.with(|l| l.borrow().as_ref().map(|l| l.storage_ns.clone()).unwrap_or_default());
+    let id = id.to_string();
+    // §7.7: answered once the storage is actually empty (`purge::run` lists it again), never
+    // before; a purge that couldn't remove everything is answered `busy`
+    wasm_bindgen_futures::spawn_local(async move {
+        let scope = if all { Scope::All } else { Scope::Current(ns) };
+        match crate::purge::run(scope).await {
+            Ok(_) => ack(&id, true, None),
+            Err(_) => ack(&id, false, Some("busy")),
+        }
+    });
+}
+
 /// `engineLang` of §4.2: `null` (the engine shows English, the host its banner) or a language tag.
 fn engine_lang(v: &JsValue) -> Option<Option<String>> {
     if v.is_null() { Some(None) } else { v.as_string().filter(|l| is_lang_tag(l)).map(Some) }
@@ -446,11 +500,6 @@ fn theme(v: &JsValue) -> Option<bool> {
         Some("light") => Some(false),
         _ => None,
     }
-}
-
-/// `storageNs` of §4.3: 64 lowercase hexadecimal digits.
-fn is_storage_ns(ns: &str) -> bool {
-    ns.len() == 64 && ns.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// `accent` of §4.2: `#RRGGBB`.
