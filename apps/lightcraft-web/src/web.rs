@@ -2,9 +2,10 @@
 //! `<canvas id="lightcraft_canvas">`, wires the file picker and drag-and-drop, and turns exports
 //! into downloads.
 //!
-//! Evora (E4): with `?host=evora` the page is the engine of Evora's Revela. It speaks the Evora host
-//! protocol with the parent page `evora-host.json` admits ([`crate::ehp`]) and opens the photos the
-//! host sends as bytes.
+//! Evora (E4, E5): with `?host=evora` the page is the engine of Evora's Revela. It keeps nothing in
+//! browser storage (memory mode, whatever `?store=` says; no `?reset`), speaks the Evora host
+//! protocol with the parent page `evora-host.json` admits ([`crate::ehp`]), opens the photos the
+//! host sends as bytes, and purges browser storage only when the host asks ([`crate::purge`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -54,16 +55,6 @@ fn set_status(text: &str) {
     }
 }
 
-/// Wait `ms` milliseconds (a browser timer), without blocking the page.
-async fn sleep_ms(ms: i32) {
-    let p = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(w) = window() {
-            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
-        }
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(p).await;
-}
-
 /// Storage key of library file `name` in library folder `dir`.
 fn library_key(dir: &str, name: &str) -> String {
     format!("{dir}/{name}")
@@ -87,12 +78,12 @@ struct Options {
     reset: bool,
     /// Evora (E3): the UI language the host imposes, as the host names it (`fr`, `zh-Hans`, `pt`…).
     lang: Option<String>,
-    /// Evora (E5): the storage namespace the host gives (`?storageNs=`, an opaque id): a
-    /// namespace, not a partition (see `backend::NS_PREFIX`).
-    storage_ns: Option<String>,
     /// Evora (E2): `light` or `dark`, Evora's identity in that appearance (`?theme=`).
     theme: Option<String>,
-    /// Evora (E4): `?host=evora`, the host bridge speaks EHP v1 ([`crate::ehp`]).
+    /// Evora (E4, E5): `?host=evora`. The host bridge speaks EHP v1 ([`crate::ehp`]); the engine
+    /// keeps nothing in browser storage (memory mode, whatever `?store=` says, and no `?reset`):
+    /// the account's storage namespace only reaches it in `evora:init`, after `evora:ready`, and
+    /// what browser storage holds is purged only when the host asks ([`crate::purge`]).
     host: bool,
 }
 
@@ -109,15 +100,20 @@ impl Options {
             })
             .collect();
         let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let host = get("host").as_deref() == Some("evora");
+        let mut store = get("store").filter(|s| s == "idb" || s == "memory").unwrap_or_else(|| "opfs".into());
+        if host && store != "memory" {
+            log::info!("lightcraft: Evora host: memory mode (store={store} ignored)");
+            store = "memory".into();
+        }
         Options {
             bench: get("bench").is_some(),
-            store: get("store").filter(|s| s == "idb" || s == "memory").unwrap_or_else(|| "opfs".into()),
+            store,
             workers: get("workers").and_then(|v| v.parse().ok()),
-            reset: get("reset").is_some(),
+            reset: !host && get("reset").is_some(),
             lang: get("lang").filter(|v| !v.is_empty() && v.len() <= 35),
-            storage_ns: get("storageNs"),
             theme: get("theme"),
-            host: get("host").as_deref() == Some("evora"),
+            host,
         }
     }
 }
@@ -326,7 +322,7 @@ async fn boot(opts: Options) -> Boot {
     let backend = if opts.store == "memory" {
         None
     } else {
-        match Backend::open(opts.store == "idb", opts.storage_ns.as_deref()).await {
+        match Backend::open(opts.store == "idb").await {
             Ok(b) => Some(b),
             Err(e) => {
                 log::error!("no browser storage ({e}); this session won't be saved");
@@ -420,8 +416,6 @@ struct WebApp {
     /// Saving stopped (a restored backup is about to replace this library: the page reloads).
     frozen: Rc<Cell<bool>>,
     lib_dir: String,
-    /// Evora (E5): the storage namespace, when the host gave one.
-    storage_ns: Option<String>,
     bench: Option<Bench>,
     first_frame_logged: bool,
     last_save: f64,
@@ -502,16 +496,10 @@ impl WebApp {
             cores.saturating_sub(1).clamp(1, 4)
         });
         let cache = app.session.media.rendered.clone();
-        // the workers open the same storage, in the same namespace (E5)
-        let worker_store = match (&backend, opts.storage_ns.as_deref()) {
-            (Some(b), Some(ns)) => format!("{}:{ns}", b.kind()),
-            (Some(b), None) => b.kind().to_string(),
-            (None, _) => "memory".to_string(),
-        };
         let workers = (n > 0).then(|| {
             Workers::start(
                 n,
-                &worker_store,
+                backend.as_ref().map_or("memory", |b| b.kind()),
                 backend.clone(),
                 index,
                 &cache,
@@ -539,7 +527,6 @@ impl WebApp {
             flush_failed_at: Rc::new(Cell::new(0.0)),
             frozen,
             lib_dir,
-            storage_ns: opts.storage_ns.clone(),
             bench: opts.bench.then(|| Bench::new(origin)),
             first_frame_logged: false,
             last_save: 0.0,
@@ -659,33 +646,6 @@ pub fn command(id: String, params: String) -> js_sys::Promise {
 }
 
 impl WebApp {
-    /// Evora (E5, `evora:purge` once the host bridge exists): delete everything this page keeps in
-    /// browser storage (its namespace only, when it has one) and stop saving; the host then closes
-    /// or reloads the page.
-    fn purge_storage(&mut self) -> serde_json::Value {
-        let Some(b) = self.backend.clone() else { return json!({"purging": false, "storage": "memory"}) };
-        self.frozen.set(true);
-        if let Some(w) = &self.workers {
-            w.terminate_all();
-        }
-        let kind = b.kind();
-        let flushing = self.flushing.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            // a save already under way finishes first (bounded), so that nothing lands after the purge
-            for _ in 0..100 {
-                if !flushing.get() {
-                    break;
-                }
-                sleep_ms(20).await;
-            }
-            match b.clear().await {
-                Ok(()) => log::info!("lightcraft: browser storage purged"),
-                Err(e) => log::warn!("purging browser storage: {e}"),
-            }
-        });
-        json!({"purging": true, "storage": kind})
-    }
-
     /// Evora (E4): the host's requests (EHP), applied on this frame in arrival order, each answered
     /// once applied.
     fn host_requests(&mut self, ctx: &egui::Context) {
@@ -768,7 +728,6 @@ impl WebApp {
                 "dark": theme.is_dark(),
                 "accent": format!("#{:02x}{:02x}{:02x}", accent.r(), accent.g(), accent.b()),
             },
-            "namespace": self.storage_ns,
             "storage": self.backend.as_ref().map_or("memory", |b| b.kind()),
             // Evora (E4): the photos in the session, and the active one (`evora:open`): its name,
             // whether its thumbnail is rendered, and why it failed if it did
@@ -795,7 +754,6 @@ impl WebApp {
             let params: serde_json::Value = serde_json::from_str(&params).unwrap_or(json!({}));
             let r = match id.as_str() {
                 "web.stats" => Ok(self.web_stats()),
-                "web.purgeStorage" => Ok(self.purge_storage()),
                 "web.renderAudit" => Ok(render_audit(ctx, &params)),
                 _ => self.app.run(&id, params),
             };
@@ -931,7 +889,7 @@ pub fn start(chinese_font: Vec<u8>) {
     let opts = Options::from_url();
     let host = opts.host;
     if host {
-        // Evora (E4): `evora:ready` goes out as soon as the bridge listens
+        // Evora (E4): `evora:ready` goes out as soon as the bridge listens (nothing is stored)
         crate::ehp::connect();
         // a panic ends the module (`panic = "abort"`): the host hears `evora:failed {code: panic}`
         let shown = std::panic::take_hook();
@@ -942,7 +900,7 @@ pub fn start(chinese_font: Vec<u8>) {
     }
     wasm_bindgen_futures::spawn_local(async move {
         // one tab per library: two would each keep their own copy and overwrite each other's saves
-        if opts.store != "memory" && safety::acquire_tab_lock(&safety::tab_lock_name(opts.storage_ns.as_deref())).await == Some(false) {
+        if opts.store != "memory" && safety::acquire_tab_lock().await == Some(false) {
             safety::show_blocking(
                 "LightCraft is already open in another tab or window of this browser.\n\n\
                  Switch to that tab, or close it and reload this page. (Two tabs would overwrite each other's changes.)",
