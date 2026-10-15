@@ -23,6 +23,14 @@
 // de texte ; les termes sensibles (E9) restants sont relevés, et bloquants avec --terms-blocking.
 // --sabotage-csp remplace les empreintes par une empreinte fausse : le script inline est bloqué et
 // le test DOIT échouer (preuve que la porte sait rougir).
+// Pont EHP (patch E4, correctif E5) : scénarios « pont-ehp » (coquille minimale, origine parente
+// admise par evora-host.json, messages étrangers, ouverture d'une photo en octets, langue et thème à
+// chaud, purges de démarrage, current et all) et « pont-muet » (evora-host.json de l'artefact, vide :
+// aucun message) ; détail et étiquettes d'erreur dans ehp-bench.mjs. Scénario « hors-pont » (E5) :
+// sans ?host=evora, ?storageNs= est ignoré et la bibliothèque s'écrit où l'amont l'écrit.
+// --ehp-witness rejoue ce banc contre des moteurs factices, un conforme (doit être vert) et un par
+// défaut (chacun doit rougir avec son étiquette), puis contre le vrai moteur sabordé (effacements
+// sans effet dans sa page : doit rougir par chaque détecteur de purge).
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
@@ -30,6 +38,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { auditRust, isEmoji, isSymbol, loadOverrides, SENSITIVE_TERMS, INFO_TERMS } from './catalog-audit.mjs';
+import {
+  FOREIGN_HTML, FOREIGN_JS, HARNESS_JS, OBSERVER_HTML, OBSERVER_JS, OTHER_NS, REAL_WITNESS, SABOTAGE_JS, WITNESS_FLAWS, WITNESS_HTML, WITNESS_JS,
+  parentPage, runEhp, runMute,
+} from './ehp-bench.mjs';
 
 // Émojis témoins : la police de l'interface ne doit pas pouvoir les peindre en émoji.
 const EMOJI_SAMPLES = '\u{1F600}\u2705\u274C\u2B50\u26A1\u{1F50D}\u{1F4C1}\u{1F5D1}\u26A0\u2714\u2716';
@@ -40,11 +52,11 @@ const MIME = {
 };
 
 function parseArgs(argv) {
-  const o = { scenarios: [], timeout: 150, sabotageCsp: false, renderAudit: false, termsBlocking: false, repo: '.' };
+  const o = { scenarios: [], timeout: 150, sabotageCsp: false, renderAudit: false, termsBlocking: false, repo: '.', ehpWitness: false };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     const v = argv[i + 1];
-    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--scenario') { const [n, q, l] = v.split('|'); o.scenarios.push({ name: n, query: q || '', lang: l || undefined }); i += 1; }
+    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--ehp-witness') { o.ehpWitness = true; } else if (k === '--witness-only') { o.witnessOnly = v; i += 1; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--scenario') { const [n, q, l] = v.split('|'); o.scenarios.push({ name: n, query: q || '', lang: l || undefined }); i += 1; }
   }
   // E3 : langue imposée par ?lang= (codes d'Evora), vérifiée par web.stats.language ; pt sans variante (D-23) reste en anglais.
   if (o.scenarios.length === 0) {
@@ -57,6 +69,11 @@ function parseArgs(argv) {
       // seulement par evora:purge ou evora:init (scénario du pont EHP). Hors pont, comportement amont
       // inchangé : ?storageNs= est ignoré, la bibliothèque s'écrit où l'amont l'écrit.
       { name: 'hors-pont', query: '?storageNs=evoraTest1&lang=de&theme=dark', lang: 'de', upstreamStorage: true, theme: { evora: true, dark: true, accent: '#4f46e5' } },
+      // E4 et E5 : pont EHP natif, mémoire imposée en mode hôte (store=opfs ignoré), storageNs de l'URL
+      // ignoré (seul celui d'evora:init compte : un autre espace, effacé au démarrage), purges (ehp-bench.mjs)
+      { name: 'pont-ehp', query: `?host=evora&store=opfs&storageNs=${OTHER_NS}&lang=en&theme=dark`, lang: 'en', ehp: 'admit', theme: { evora: true, dark: true, accent: '#4f46e5' } },
+      // E4 : evora-host.json de l'artefact (vide) : le pont reste muet
+      { name: 'pont-muet', query: '?host=evora&lang=en', lang: 'en', ehp: 'mute' },
       { name: 'francais', query: '?store=memory&lang=fr&theme=light', lang: 'fr', theme: { evora: true, dark: false, accent: '#4f46e5' } },
     ];
   }
@@ -75,11 +92,17 @@ function listen(server, host) {
   return new Promise((ok, ko) => { server.once('error', ko); server.listen(0, host, () => ok(server.address().port)); });
 }
 
-function staticServer(root, headers) {
+function staticServer(root, headers, extra = () => null) {
   const base = resolve(root);
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://x');
+      const served = extra(url.pathname);
+      if (served) {
+        res.writeHead(200, { 'Content-Type': served.type, 'Cache-Control': 'no-store', ...headers });
+        res.end(req.method === 'HEAD' ? undefined : served.body);
+        return;
+      }
       const rel = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
       const file = resolve(base, '.' + rel);
       if (file !== base && !file.startsWith(base + sep)) { res.writeHead(403).end(); return; }
@@ -157,6 +180,9 @@ const PROBE = `(async () => {
   return JSON.stringify(st);
 })()`;
 
+const JS = 'text/javascript; charset=utf-8';
+const HTML = 'text/html; charset=utf-8';
+
 async function scenario(opts, chrome, sc, cspHashes) {
   const engineHost = '127.0.0.1';
   const parentHost = 'localhost';
@@ -168,12 +194,51 @@ async function scenario(opts, chrome, sc, cspHashes) {
     "img-src 'self' data: blob:", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:", `frame-ancestors ${parentOrigin}`,
     "object-src 'none'", "base-uri 'none'",
   ].join('; ');
-  const engine = staticServer(opts.site, { 'Content-Security-Policy': csp });
+  // E4 : evora-host.json à côté d'index.html. « admit » : ce qu'écrirait le provisionnement d'Evora
+  // pour la coquille du banc ; « mute » : le fichier de l'artefact, tel quel.
+  const shippedHostConfig = () => { try { return readFileSync(join(opts.site, 'evora-host.json')); } catch { return null; } };
+  const engineExtra = (path) => {
+    if (!sc.ehp) return null;
+    if (path.endsWith('/evora-host.json')) {
+      if (sc.ehp === 'admit') return { type: 'application/json', body: JSON.stringify({ parentOrigins: [parentOrigin] }) };
+      const body = shippedHostConfig();
+      return body ? { type: 'application/json', body } : null;
+    }
+    const assets = { '/__evora/observer.html': [HTML, OBSERVER_HTML], '/__evora/observer.js': [JS, OBSERVER_JS] };
+    if (sc.witness) Object.assign(assets, { '/__evora/witness/index.html': [HTML, WITNESS_HTML], '/__evora/witness/witness.js': [JS, WITNESS_JS] });
+    // témoin sabordé du vrai moteur : sabotage.js chargé avant tout autre script de son index.html
+    if (sc.sabotage) {
+      assets['/__evora/sabotage.js'] = [JS, SABOTAGE_JS];
+      try {
+        const index = readFileSync(join(opts.site, 'index.html'), 'utf8');
+        if (!index.includes('<head>')) throw new Error('<head> absent');
+        assets['/index.html'] = [HTML, index.replace('<head>', '<head>\n  <script src="__evora/sabotage.js"></script>')];
+      } catch (err) {
+        errors.push(`[ehp-bench] index.html du moteur illisible pour le sabotage : ${err.message}`);
+      }
+    }
+    return assets[path] ? { type: assets[path][0], body: assets[path][1] } : null;
+  };
+  const engine = staticServer(opts.site, { 'Content-Security-Policy': csp }, engineExtra);
   const enginePort = await listen(engine, engineHost);
   const engineOrigin = `http://${engineHost}:${enginePort}`;
-  const engineUrl = `${engineOrigin}/index.html${sc.query}`;
+  const engineUrl = sc.witness ? `${engineOrigin}/__evora/witness/index.html${sc.query}` : `${engineOrigin}/index.html${sc.query}`;
+  // E4 : une origine NON admise (C) pour les messages étrangers du scénario « pont-ehp »
+  const foreignAssets = { '/__evora/foreign.html': [HTML, FOREIGN_HTML], '/__evora/foreign.js': [JS, FOREIGN_JS] };
+  const foreign = sc.ehp ? staticServer(opts.site, { 'Content-Security-Policy': `default-src 'none'; script-src 'self'; img-src data:; frame-ancestors ${parentOrigin}` },
+    (path) => (foreignAssets[path] ? { type: foreignAssets[path][0], body: foreignAssets[path][1] } : { type: 'text/plain', body: '404' })) : null;
+  const foreignOrigin = foreign ? `http://${engineHost}:${await listen(foreign, engineHost)}` : null;
   parent.on('request', (req, res) => {
     if (req.url.startsWith('/favicon')) { res.writeHead(204).end(); return; }
+    if (sc.ehp) {
+      const path = new URL(req.url, 'http://x').pathname;
+      const assets = { '/': [HTML, parentPage({ engineUrl, engineOrigin, foreignOrigin })], '/__evora/harness.js': [JS, HARNESS_JS], ...foreignAssets };
+      const hit = assets[path];
+      res.writeHead(hit ? 200 : 404, { 'Content-Type': hit ? hit[0] : 'text/plain', 'Cache-Control': 'no-store',
+        'Content-Security-Policy': `default-src 'none'; script-src 'self'; frame-src ${engineOrigin} ${foreignOrigin} 'self'; style-src 'unsafe-inline'; img-src data:` });
+      res.end(hit ? hit[1] : '404');
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
       'Content-Security-Policy': `default-src 'none'; frame-src ${engineOrigin}; style-src 'unsafe-inline'; img-src data:` });
     res.end(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Evora : hôte de test</title><link rel="icon" href="data:,">
@@ -195,6 +260,7 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   const appLog = [];
   const targets = new Map(); // sessionId -> { type, url }
   let frameSession = null;
+  const frames = []; // sessions des cadres hors processus (moteur, observateur, page étrangère)
   const label = (sid) => (targets.get(sid)?.type || 'page');
   const text = (args) => args.map((a) => (a.value !== undefined ? String(a.value) : a.description || a.type)).join(' ');
 
@@ -204,7 +270,7 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
       const sid = params.sessionId;
       const info = params.targetInfo;
       targets.set(sid, { type: info.type, url: info.url });
-      if (info.type === 'iframe') frameSession = sid;
+      if (info.type === 'iframe') frames.push(sid);
       // Envoyés d'un bloc (le protocole les traite dans l'ordre) : la cible reste en pause le moins
       // longtemps possible, mais aucune erreur de démarrage n'échappe à l'écoute.
       const calls = [cdp.send('Runtime.enable', {}, sid), cdp.send('Log.enable', {}, sid)];
@@ -231,6 +297,7 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   });
 
   const result = { scenario: sc.name, engineUrl, parentOrigin, engineOrigin, ok: false };
+  const tStart = Date.now();
   try {
     const version = await withTimeout(cdp.send('Browser.getVersion'), 20000, 'Browser.getVersion');
     result.browser = version.product;
@@ -241,10 +308,22 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, page);
     await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, page);
     const t0 = Date.now();
+    result.startMs = t0 - tStart;
     await cdp.send('Page.navigate', { url: `${parentOrigin}/` }, page);
     let last = null;
+    // Le cadre du moteur est celui dont le document est …/index.html (le banc EHP en ajoute d'autres).
+    const findEngine = async () => {
+      for (const sid of frames) {
+        try {
+          const r = await withTimeout(cdp.send('Runtime.evaluate', { expression: 'location.pathname', returnByValue: true }, sid), 5000, 'cadre');
+          if (/\/index\.html$/.test(r.result?.value || '')) return sid;
+        } catch { /* cadre pas encore prêt */ }
+      }
+      return null;
+    };
     while (Date.now() - t0 < opts.timeout * 1000) {
       await sleep(250);
+      if (!frameSession) frameSession = await findEngine();
       if (!frameSession) continue;
       try {
         const r = await withTimeout(cdp.send('Runtime.evaluate', { expression: PROBE, awaitPromise: true, returnByValue: true }, frameSession), 15000, 'sonde');
@@ -261,12 +340,15 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
     result.last = last;
     if (last?.ready) {
       await sleep(3000); // erreurs tardives (workers, premières frames)
-      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, page);
-      await writeFile(join(opts.out, `smoke-${sc.name}.png`), Buffer.from(shot.data, 'base64'));
-      const webgl = await cdp.send('Runtime.evaluate', {
-        expression: `(() => { const g = document.createElement('canvas').getContext('webgl2'); if (!g) return 'aucun'; const d = g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER); })()`,
-        returnByValue: true }, frameSession);
-      result.webgl2 = webgl.result?.value;
+      // (moteurs factices des témoins : ni capture ni WebGL, sans objet)
+      if (!sc.witness) {
+        const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, page);
+        await writeFile(join(opts.out, `smoke-${sc.name}.png`), Buffer.from(shot.data, 'base64'));
+        const webgl = await cdp.send('Runtime.evaluate', {
+          expression: `(() => { const g = document.createElement('canvas').getContext('webgl2'); if (!g) return 'aucun'; const d = g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER); })()`,
+          returnByValue: true }, frameSession);
+        result.webgl2 = webgl.result?.value;
+      }
       if (sc.upstreamStorage) {
         // l'amont écrit sa bibliothèque à la racine d'OPFS (library/) ; aucun espace de noms venu de l'URL
         let st = null;
@@ -284,6 +366,20 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
           if (!st.opfs.includes('library/') && !st.idb.includes('lightcraft')) errors.push(`E5 hors pont : bibliothèque amont absente du stockage (${JSON.stringify(st)})`);
         }
       }
+      if (sc.ehp) {
+        const evalIn = async (sid, expression, ms = 90000) => {
+          const r = await withTimeout(cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sid), ms, expression.slice(0, 40));
+          if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+          return r.result.value;
+        };
+        const ctx = { errors, result, evalPage: (e) => evalIn(page, e), engineStats: async () => JSON.parse(await evalIn(frameSession, "globalThis.lightcraft.command('web.stats', '{}')", 20000)) };
+        try {
+          if (sc.ehp === 'admit') await runEhp(ctx);
+          else await runMute({ ...ctx, site: opts.site, readFileSync, join });
+        } catch (err) {
+          errors.push(`[ehp-bench] banc interrompu : ${err.message}`);
+        }
+      }
       if (sc.audit) {
         const params = JSON.stringify({ terms: [...SENSITIVE_TERMS, ...INFO_TERMS], probe: sc.probe });
         const r = await withTimeout(cdp.send('Runtime.evaluate', {
@@ -294,15 +390,18 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
       }
     }
     result.targets = [...targets.values()].map((t) => t.type);
+    result.afterReadyMs = Date.now() - t0 - result.wallMs;
   } catch (err) {
     errors.push(`pilotage : ${err.message}`);
   } finally {
     proc.kill('SIGKILL');
     engine.close();
     parent.close();
+    if (foreign) foreign.close();
   }
   const firstFrame = appLog.map((l) => /first UI frame at (\d+) ms/.exec(l)).find(Boolean);
   result.appFirstFrameMs = firstFrame ? Number(firstFrame[1]) : null;
+  result.totalMs = Date.now() - tStart;
   result.errors = errors;
   result.warnings = warnings;
   result.appLog = appLog.slice(0, 40);
@@ -350,6 +449,39 @@ function judgeRender(audit, codeSymbols, termsBlocking) {
   return { ok: problems.length === 0, lines, problems };
 }
 
+// Témoins du banc EHP : le même banc contre des moteurs factices ; le conforme doit être vert, chaque
+// défaut rouge AVEC son étiquette (un rouge pour une autre raison ne prouve pas la garde visée).
+async function witness(opts, chrome, cspHashes) {
+  const runs = [];
+  for (const [flaw, tag] of WITNESS_FLAWS.filter(([f]) => !opts.witnessOnly || f === opts.witnessOnly)) {
+    const modes = flaw === 'aucun' ? ['admit', 'mute'] : [flaw === 'bavard' ? 'mute' : 'admit'];
+    for (const mode of modes) {
+      const sc = { name: `temoin-${flaw}-${mode}`, query: `?host=evora&flaw=${flaw}`, ehp: mode, witness: true };
+      const r = await scenario({ ...opts, timeout: 60 }, chrome, sc, cspHashes);
+      const tags = [...new Set(r.errors.map((e) => (/^\[[a-z0-9-]+\]/.exec(e) || ['?'])[0]))];
+      const ok = tag === null ? r.ok : !r.ok && tags.includes(tag);
+      runs.push({ flaw, mode, expected: tag || 'vert', ok, green: r.ok, tags, errors: r.errors.slice(0, 6) });
+      if (process.env.EVORA_DEBUG) console.log(JSON.stringify({ ms: r.ehpMs, start: r.startMs, wall: r.wallMs, total: r.totalMs, after: r.afterReadyMs }));
+      console.log(`témoin ${flaw} (${mode}) : attendu ${tag || 'vert'} ; obtenu ${r.ok ? 'vert' : `rouge ${tags.join(' ')}`} -> ${ok ? 'OK' : 'ÉCHEC'} (${r.wallMs} ms jusqu'au moteur prêt)`);
+      if (!ok) for (const e of r.errors.slice(0, 8)) console.log(`  ${e}`);
+    }
+  }
+  // Le VRAI moteur, sabordé dans sa page (effacements sans effet) : rouge par chaque détecteur de purge.
+  if (!opts.witnessOnly || opts.witnessOnly === REAL_WITNESS.name) {
+    const sc = { name: `temoin-${REAL_WITNESS.name}`, query: `?host=evora&store=opfs&storageNs=${OTHER_NS}&lang=en&theme=dark`, ehp: 'admit', sabotage: true };
+    const r = await scenario({ ...opts, timeout: 150 }, chrome, sc, cspHashes);
+    const tags = [...new Set(r.errors.map((e) => (/^\[[a-z0-9-]+\]/.exec(e) || ['?'])[0]))];
+    const ok = !r.ok && REAL_WITNESS.expected.every((t) => tags.includes(t));
+    runs.push({ flaw: REAL_WITNESS.name, mode: 'admit', expected: REAL_WITNESS.expected.join(' '), ok, green: r.ok, tags, errors: r.errors.slice(0, 8) });
+    console.log(`témoin ${REAL_WITNESS.name} (vrai moteur sabordé) : attendu ${REAL_WITNESS.expected.join(' ')} ; obtenu ${r.ok ? 'vert' : `rouge ${tags.join(' ')}`} -> ${ok ? 'OK' : 'ÉCHEC'} (${r.wallMs} ms jusqu'au moteur prêt)`);
+    if (!ok) for (const e of r.errors.slice(0, 10)) console.log(`  ${e}`);
+  }
+  await writeFile(join(opts.out, 'ehp-witness.json'), JSON.stringify(runs, null, 2));
+  const ok = runs.every((x) => x.ok);
+  console.log(`\nTémoins du banc EHP : ${ok ? 'OK' : 'ÉCHEC'} (${runs.filter((x) => x.ok).length}/${runs.length})`);
+  return ok ? 0 : 1;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts.site || !opts.out) { console.error('usage : node smoke.mjs --site <dossier> --out <dossier>'); return 2; }
@@ -359,6 +491,7 @@ async function main() {
   let cspHashes = existsSync(cspFile) ? readFileSync(cspFile, 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split('\t')[1]) : [];
   if (opts.sabotageCsp) cspHashes = ["'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='"];
   console.log(`Chrome : ${chrome} ; empreintes CSP : ${cspHashes.join(' ') || 'aucune'}`);
+  if (opts.ehpWitness) return witness(opts, chrome, cspHashes);
   const results = [];
   let codeSymbols = new Map();
   if (opts.renderAudit) {
@@ -385,6 +518,10 @@ async function main() {
     console.log(`démarrage à froid : prêt à ${s.tReady ? Math.round(s.tReady) : '?'} ms après la navigation de l'iframe (performance.now), ${r.wallMs} ms d'horloge depuis la navigation de la page parente ; première frame UI annoncée par l'app : ${r.appFirstFrameMs ?? '?'} ms`);
     console.log(`état final : canvas ${s.w}x${s.h}, chargement retiré ${s.loading === false}, API ${s.api}, web.stats ${s.stats ? JSON.stringify(s.stats) : 'absent'}${s.probeError ? `, erreur de sonde ${s.probeError}` : ''}${s.status ? `, statut « ${s.status} »` : ''}`);
     if (r.storage) console.log(`E5 hors pont, stockage de l'origine moteur : ${JSON.stringify(r.storage)}`);
+    if (r.ehp) console.log(`E4 échanges vus de la coquille : ${r.ehp.log.map((m) => `${m.type}${m.re ? ` (re ${m.re.slice(-4)})` : ''}${m.payload ? ` ${JSON.stringify(m.payload).slice(0, 140)}` : ''}`).join(' ; ') || 'aucun'}`);
+    if (r.ehpSteps) for (const [k, v] of Object.entries(r.ehpSteps)) console.log(`E4 étape ${k} : ${JSON.stringify(v).slice(0, 600)}`);
+    if (r.ehpStats) console.log(`E4 état du moteur : ${JSON.stringify(r.ehpStats).slice(0, 600)}`);
+    if (r.shippedHostConfig) console.log(`E4 evora-host.json de l'artefact : ${JSON.stringify(r.shippedHostConfig)}`);
     for (const e of r.errors) console.log(`ERREUR ${e}`);
     for (const w of r.warnings.slice(0, 20)) console.log(`avertissement ${w}`);
     for (const l of r.appLog.slice(0, 15)) console.log(`journal ${l}`);

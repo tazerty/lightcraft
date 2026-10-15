@@ -15,6 +15,16 @@
 # rouge ; l'archive n'est déposée qu'au vert. Les instruments maison (.github/evora/*.mjs) prouvent
 # d'abord qu'ils savent rougir (auto-tests sur paquets piégés, témoin vert), et le test de fumée est
 # saboté une fois par exécution.
+#
+# Pont EHP (E4, avec le correctif E5) : le test de fumée joue « pont-ehp » (coquille minimale d'une
+# autre origine, evora-host.json admis écrit par le banc, messages de version 2, d'une origine non
+# admise et d'une autre fenêtre sans réponse, stockage amorcé puis purgé au démarrage, ouverture d'une
+# photo reçue en octets, langue et thème à chaud, purges current et all vérifiées au moment de
+# l'accusé, aucune écriture en séance ni après purge), « pont-muet » (evora-host.json de l'artefact,
+# vide) et « hors-pont » (comportement amont, ?storageNs= ignoré). Le même banc est rejoué à chaque
+# exécution contre des moteurs factices (.github/evora/ehp-bench.mjs) et contre le vrai moteur sabordé
+# (effacements sans effet dans sa page) : le conforme doit rester vert et chaque défaut doit rougir
+# avec son étiquette, sinon le job est rouge.
 name: Evora web
 
 on:
@@ -373,7 +383,7 @@ jobs:
           if [ "$code" -eq 0 ]; then echo "::error::le test de fumée n'a pas rougi sous sabotage CSP : instrument aveugle"; exit 1; fi
           echo "Sabotage CSP : le test de fumée a bien échoué (code $code)."
 
-      - name: Porte test de fumée — Chrome sans interface, iframe d'une autre origine, audit de rendu E10 et E9
+      - name: Porte test de fumée — Chrome sans interface, iframe d'une autre origine, audit de rendu E10 et E9, pont EHP
         id: g_smoke
         continue-on-error: true
         run: |
@@ -381,6 +391,14 @@ jobs:
           node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/smoke" --timeout 150 \
             --render-audit --terms-blocking --repo "$GITHUB_WORKSPACE" \
             | tee "$RUNNER_TEMP/evora-diag/smoke.txt"
+
+      - name: Témoins du pont EHP — moteurs factices et vrai moteur sabordés (chaque défaut doit rougir, le conforme rester vert)
+        id: g_ehp_witness
+        if: ${{ !cancelled() && steps.unpacked.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/ehp-witness" --ehp-witness \
+            | tee "$RUNNER_TEMP/evora-diag/ehp-witness.txt"
 
       - name: Verdict des portes
         if: ${{ !cancelled() }}
@@ -393,6 +411,7 @@ jobs:
           BUNDLE: ${{ steps.g_bundle.outcome }}
           SABOTAGE: ${{ steps.g_smoke_sabotage.outcome }}
           SMOKE: ${{ steps.g_smoke.outcome }}
+          WITNESS: ${{ steps.g_ehp_witness.outcome }}
         run: |
           set -euo pipefail
           {
@@ -407,11 +426,12 @@ jobs:
             echo "| cargo-about (LICENSES/ des crates) | $ABOUT |"
             echo "| Bundle (marques, hébergement, .gz/.br, CSP, taille) | $BUNDLE |"
             echo "| Sabotage CSP du test de fumée (doit rougir) | $SABOTAGE |"
-            echo "| Test de fumée (autre origine, démarrage à froid, audit de rendu E10 et E9) | $SMOKE |"
+            echo "| Test de fumée (autre origine, démarrage à froid, audit de rendu E10 et E9, pont EHP E4/E5) | $SMOKE |"
+            echo "| Témoins du pont EHP (moteurs factices et vrai moteur sabordés : conforme vert, chaque défaut rouge) | $WITNESS |"
             echo
             echo "Avertissements de cargo-deny : $(awk '/^warning/ { n++ } END { print n + 0 }' "$RUNNER_TEMP/cargo-deny.txt" 2>/dev/null || echo '?') (détail dans le journal de la porte)."
           } >> "$GITHUB_STEP_SUMMARY"
-          for v in "$EMOJI" "$DENY" "$E7" "$E6" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE"; do
+          for v in "$EMOJI" "$DENY" "$E7" "$E6" "$ABOUT" "$BUNDLE" "$SABOTAGE" "$SMOKE" "$WITNESS"; do
             if [ "$v" != "success" ]; then echo "::error::au moins une porte est rouge : voir le résumé du job"; exit 1; fi
           done
           echo "Toutes les portes sont vertes."
