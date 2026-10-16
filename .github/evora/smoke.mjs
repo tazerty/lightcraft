@@ -450,19 +450,21 @@ function judgeRender(audit, codeSymbols, termsBlocking) {
 }
 
 // Témoins du banc EHP : le même banc contre des moteurs factices ; le conforme doit être vert, chaque
-// défaut rouge AVEC son étiquette (un rouge pour une autre raison ne prouve pas la garde visée).
+// défaut rouge AVEC son ou ses étiquettes, toutes exigées (un rouge pour une autre raison ne prouve
+// pas la garde visée).
 async function witness(opts, chrome, cspHashes) {
   const runs = [];
   for (const [flaw, tag] of WITNESS_FLAWS.filter(([f]) => !opts.witnessOnly || f === opts.witnessOnly)) {
+    const want = tag === null ? [] : [].concat(tag);
     const modes = flaw === 'aucun' ? ['admit', 'mute'] : [flaw === 'bavard' ? 'mute' : 'admit'];
     for (const mode of modes) {
       const sc = { name: `temoin-${flaw}-${mode}`, query: `?host=evora&flaw=${flaw}`, ehp: mode, witness: true };
       const r = await scenario({ ...opts, timeout: 60 }, chrome, sc, cspHashes);
       const tags = [...new Set(r.errors.map((e) => (/^\[[a-z0-9-]+\]/.exec(e) || ['?'])[0]))];
-      const ok = tag === null ? r.ok : !r.ok && tags.includes(tag);
-      runs.push({ flaw, mode, expected: tag || 'vert', ok, green: r.ok, tags, errors: r.errors.slice(0, 6) });
+      const ok = want.length === 0 ? r.ok : !r.ok && want.every((t) => tags.includes(t));
+      runs.push({ flaw, mode, expected: want.join(' ') || 'vert', ok, green: r.ok, tags, errors: r.errors.slice(0, 6) });
       if (process.env.EVORA_DEBUG) console.log(JSON.stringify({ ms: r.ehpMs, start: r.startMs, wall: r.wallMs, total: r.totalMs, after: r.afterReadyMs }));
-      console.log(`témoin ${flaw} (${mode}) : attendu ${tag || 'vert'} ; obtenu ${r.ok ? 'vert' : `rouge ${tags.join(' ')}`} -> ${ok ? 'OK' : 'ÉCHEC'} (${r.wallMs} ms jusqu'au moteur prêt)`);
+      console.log(`témoin ${flaw} (${mode}) : attendu ${want.join(' ') || 'vert'} ; obtenu ${r.ok ? 'vert' : `rouge ${tags.join(' ')}`} -> ${ok ? 'OK' : 'ÉCHEC'} (${r.wallMs} ms jusqu'au moteur prêt)`);
       if (!ok) for (const e of r.errors.slice(0, 8)) console.log(`  ${e}`);
     }
   }
