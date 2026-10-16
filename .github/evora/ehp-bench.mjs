@@ -6,7 +6,10 @@
 // comme l'écrirait le provisionnement d'Evora. Trois autres cadres l'entourent :
 // - un observateur servi par l'origine du moteur (A) : il amorce le stockage navigateur (restes de
 //   LightCraft hors espace de noms, un autre espace de noms, l'espace du compte, et ce qu'y
-//   laisseraient les autres moteurs d'Evora) et le liste à la demande, sans jamais rien créer ;
+//   laisseraient les autres moteurs d'Evora) et le liste EN ENTIER à la demande (OPFS, IndexedDB,
+//   localStorage, sessionStorage, Cache Storage), sans jamais rien créer. Le juge ne filtre pas par
+//   les noms que le moteur se connaît : tout ce qui n'appartient pas aux autres moteurs est au
+//   moteur, quel que soit son nom (une écriture ou un reste sous un nom nouveau rougit) ;
 // - une page d'une origine NON admise (C) et une page de la même origine que la coquille mais qui
 //   n'est pas elle (B, autre fenêtre) : elles envoient au moteur des messages EHP valides, qui
 //   doivent rester sans effet et sans réponse (contrôles d'origine ET de source).
@@ -43,6 +46,13 @@ export const WITNESS_FLAWS = [
   ['purge-all-partielle', '[ehp-purge-all]'],
   ['ecriture-apres-purge', '[ehp-late-write]'],
   ['ecriture-en-seance', '[ehp-session-write]'],
+  // écritures sous un nom que storage_names.rs ignore, une par type de stockage : le juge les voit
+  ['hors-nom-opfs', ['[ehp-session-write]', '[ehp-purge-ack]']],
+  ['hors-nom-idb', ['[ehp-session-write]', '[ehp-purge-ack]']],
+  ['hors-nom-ls', ['[ehp-session-write]', '[ehp-purge-ack]']],
+  ['hors-nom-ss', ['[ehp-session-write]', '[ehp-purge-ack]']],
+  ['hors-nom-cache', ['[ehp-session-write]', '[ehp-purge-ack]']],
+  ['ecriture-au-demarrage', ['[ehp-init-write]', '[ehp-purge-ack]']],
   ['ouverture-feinte', '[ehp-open]'],
   ['langue-ignoree', '[ehp-live]'],
   ['bavard', '[ehp-mute]'],
@@ -65,26 +75,29 @@ export const SABOTAGE_JS = `'use strict';
 })();
 `;
 
-// Les noms de LightCraft dans le stockage (apps/lightcraft-web/src/storage_names.rs) ; le reste
-// appartient aux autres moteurs de l'origine et doit survivre à toute purge.
-const LC_OPFS = (n) => /^(library|originals|thumbs|active-library)\/?$/.test(n) || /^library-[A-Za-z0-9-]{1,64}\/?$/.test(n) || n.startsWith('lightcraft-ns-');
-const LC_IDB = (n) => n === 'lightcraft' || n.startsWith('lightcraft-ns-');
-const LC_LS = (k) => k.startsWith('lightcraft');
-const FOREIGN = { opfs: ['effectcraft-cache/', `ns-${NS}/`, 'photocraft-temoin.txt'], idb: ['photocraft.presets'], ls: ['pdfcraft'] };
+// Types de stockage de l'origine du moteur que l'observateur liste et que le banc juge.
+const KINDS = ['opfs', 'idb', 'ls', 'ss', 'cache'];
+// Ce que l'amorçage dépose pour les AUTRES moteurs de l'origine : doit survivre à toute purge. Tout le
+// reste du stockage de l'origine est au moteur, quel que soit son nom.
+const FOREIGN = { opfs: ['effectcraft-cache/', `ns-${NS}/`, 'photocraft-temoin.txt'], idb: ['photocraft.presets'], ls: ['pdfcraft'], ss: [], cache: [] };
+// Les restes de LightCraft que l'amorçage dépose (noms d'apps/lightcraft-web/src/storage_names.rs).
 const SEEDED_LC = {
   opfs: ['active-library', 'library-20261013-101500/', 'library/', `lightcraft-ns-${NS}/`, `lightcraft-ns-${OTHER_NS}/`, 'originals/', 'thumbs/'],
   idb: ['lightcraft', `lightcraft-ns-${NS}`, `lightcraft-ns-${OTHER_NS}`],
   ls: ['lightcraft.temoin'],
+  ss: [],
+  cache: [],
 };
-const KEPT_AFTER_INIT = { opfs: [`lightcraft-ns-${NS}/`], idb: [`lightcraft-ns-${NS}`], ls: [] };
+const KEPT_AFTER_INIT = { opfs: [`lightcraft-ns-${NS}/`], idb: [`lightcraft-ns-${NS}`], ls: [], ss: [], cache: [] };
 
 // --- Pages et scripts servis par le banc ------------------------------------------------------
 
 export const OBSERVER_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>observateur</title><link rel="icon" href="data:,"></head>
 <body><script src="/__evora/observer.js"></script></body></html>`;
 
-// Observateur (origine du moteur) : amorce et liste OPFS, IndexedDB et localStorage ; répond sur le
-// port de la demande, jamais par la fenêtre (le journal de la coquille ne voit que le moteur).
+// Observateur (origine du moteur) : amorce OPFS, IndexedDB et localStorage, et liste en entier ces trois-là
+// plus sessionStorage et Cache Storage ; répond sur le port de la demande, jamais par la fenêtre (le
+// journal de la coquille ne voit que le moteur). Une liste impossible à dresser est une erreur.
 export const OBSERVER_JS = `'use strict';
 const put = async (path, text) => {
   const parts = path.split('/');
@@ -118,7 +131,10 @@ const list = async (ns) => {
   } catch (e) { inNs = null; }
   const idb = (await indexedDB.databases()).map((d) => d.name);
   const ls = Object.keys(localStorage);
-  return { opfs: opfs.sort(), inNs, idb: idb.sort(), ls: ls.sort() };
+  const ss = Object.keys(sessionStorage);
+  if (typeof caches === 'undefined') throw new Error('Cache Storage indisponible : liste incomplète');
+  const cache = await caches.keys();
+  return { opfs: opfs.sort(), inNs, idb: idb.sort(), ls: ls.sort(), ss: ss.sort(), cache: cache.sort() };
 };
 addEventListener('message', async (e) => {
   if (e.source !== parent || !e.ports[0]) return;
@@ -339,6 +355,14 @@ export const WITNESS_JS = `'use strict';
     await w.write('x');
     await w.close();
   };
+  // écriture sous un nom que le moteur ne se connaît pas (et que sa purge ne couvre donc pas)
+  const offName = {
+    'hors-nom-opfs': () => put('recovery/snapshot.lcproj'),
+    'hors-nom-idb': () => new Promise((ok, ko) => { const r = indexedDB.open('lightcraft-cache', 1); r.onsuccess = () => { r.result.close(); ok(); }; r.onerror = () => ko(r.error); }),
+    'hors-nom-ls': () => localStorage.setItem('egui_memory_ron', '{}'),
+    'hors-nom-ss': () => sessionStorage.setItem('egui_memory_ron', '{}'),
+    'hors-nom-cache': async () => (await caches.open('lightcraft-tiles')).put(location.href, new Response('x')),
+  };
   const purge = async (scope) => {
     const root = await navigator.storage.getDirectory();
     const names = [];
@@ -375,12 +399,14 @@ export const WITNESS_JS = `'use strict';
         st.inited = true;
         st.ns = p.storageNs;
         if (flaw !== 'sans-purge-init') await purge({ keep: st.ns });
+        if (flaw === 'ecriture-au-demarrage') localStorage.setItem('egui_memory_ron', '{}');
         st.language = p.engineLang || 'en';
         st.dark = p.theme === 'dark';
         ack(d.id);
       } else if (d.type === 'evora:open' && st.inited) {
         if (flaw !== 'ouverture-feinte') { st.photos += 1; st.active = p.name; }
         if (flaw === 'ecriture-en-seance') await put('library/catalog.snap');
+        if (offName[flaw]) await offName[flaw]();
         ack(d.id);
       } else if (d.type === 'evora:lang' && st.inited) {
         if (flaw !== 'langue-ignoree') st.language = p.engineLang || 'en';
@@ -409,14 +435,35 @@ export const WITNESS_JS = `'use strict';
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const sameSet = (a, b) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
-const lcOf = (s) => ({ opfs: (s.opfs || []).filter(LC_OPFS), idb: (s.idb || []).filter(LC_IDB), ls: (s.ls || []).filter(LC_LS) });
-const missing = (s, want) => ['opfs', 'idb', 'ls'].flatMap((k) => want[k].filter((n) => !(s[k] || []).includes(n)).map((n) => `${k} ${n}`));
 const show = (o) => JSON.stringify(o);
-// Ce qui est apparu dans le stockage du moteur depuis l'accusé (une écriture tardive).
-const appeared = (atAck, later) => {
-  const a = lcOf(atAck);
-  const b = lcOf(later);
-  return ['opfs', 'idb', 'ls'].flatMap((k) => b[k].filter((n) => !a[k].includes(n)).map((n) => `${k} ${n}`));
+// Une liste de l'observateur ne prouve quelque chose que lisible et complète (les cinq types).
+const readable = (s) => !!s && !s.error && KINDS.every((k) => Array.isArray(s[k]));
+// Entrées « <type> <nom> » d'une liste (ou d'un ensemble de noms attendus), éventuellement filtrées.
+const entries = (s, keep = () => true) => KINDS.flatMap((k) => ((s && Array.isArray(s[k])) ? s[k] : []).filter((n) => keep(k, n)).map((n) => `${k} ${n}`));
+const minus = (a, b) => a.filter((e) => !b.includes(e));
+// Le stockage du moteur : TOUT ce qui n'est pas aux autres moteurs, quel que soit le nom.
+const own = (s) => entries(s, (k, n) => !FOREIGN[k].includes(n));
+const missing = (s, want) => minus(entries(want), entries(s));
+// Ce que contient l'espace du compte, en entrées comparables.
+const inNsOf = (s) => (s.inNs || []).map((n) => `espace ${n}`);
+
+// Une purge accusée : stockage du moteur (tout nom hors autres moteurs) vide AU MOMENT de l'accusé,
+// autres moteurs intacts, rien d'apparu ensuite. Une liste illisible rougit (prémisse dans l'assertion).
+const judgePurge = (r, tag, what, errors) => {
+  if (!readable(r && r.atAck)) {
+    errors.push(`[ehp-seed] liste du stockage à l'accusé de ${what} illisible (le banc ne prouverait rien) : ${show(r && r.atAck)}`);
+    return;
+  }
+  const left = own(r.atAck);
+  if (left.length) errors.push(`${tag} stockage du moteur non vide à l'accusé de ${what} (jugé quel que soit le nom) : ${left.join(', ')}`);
+  const gone = missing(r.atAck, FOREIGN);
+  if (gone.length) errors.push(`[ehp-overpurge] ${what} a touché le stockage d'un autre moteur : ${gone.join(', ')}`);
+  if (!readable(r.later)) {
+    errors.push(`[ehp-seed] liste du stockage après ${what} illisible : ${show(r.later)}`);
+    return;
+  }
+  const late = minus(entries(r.later), entries(r.atAck));
+  if (late.length) errors.push(`[ehp-late-write] le moteur a écrit après ${what} : ${late.join(', ')}`);
 };
 
 // Les étapes du scénario « pont-ehp », vues de la coquille (log) et du moteur (web.stats).
@@ -440,7 +487,8 @@ export async function runEhp({ evalPage, engineStats, errors, result }) {
     await new Promise((ok) => setTimeout(ok, 200));
   }
   const seed = await step('seed');
-  const seeded = seed && !seed.error ? missing(seed, { opfs: [...SEEDED_LC.opfs, ...FOREIGN.opfs], idb: [...SEEDED_LC.idb, ...FOREIGN.idb], ls: [...SEEDED_LC.ls, ...FOREIGN.ls] }) : ['tout'];
+  const seededWant = [...entries(SEEDED_LC), ...entries(FOREIGN)];
+  const seeded = readable(seed) ? minus(seededWant, entries(seed)) : ['tout'];
   if (seeded.length) errors.push(`[ehp-seed] amorçage du stockage raté (le banc ne prouverait rien) : ${seed && seed.error ? seed.error : seeded.join(', ')}`);
 
   const init = await step('init');
@@ -450,13 +498,19 @@ export async function runEhp({ evalPage, engineStats, errors, result }) {
   if (s1.language !== 'fr' || !s1.theme || s1.theme.dark !== true || s1.theme.evora !== true || s1.theme.accent !== '#4f46e5' || s1.storage !== 'memory') {
     errors.push(`[ehp-init] evora:init non appliqué (attendu fr, sombre, Evora #4f46e5, mémoire) : ${show({ language: s1.language, theme: s1.theme, storage: s1.storage })}`);
   }
-  const afterInit = init && init.storage && !init.storage.error ? init.storage : null;
+  const afterInit = readable(init && init.storage) ? init.storage : null;
   if (!afterInit) errors.push(`[ehp-seed] liste du stockage après init illisible : ${show(init && init.storage)}`);
   else {
-    const lc = lcOf(afterInit);
-    if (!sameSet(lc.opfs, KEPT_AFTER_INIT.opfs) || !sameSet(lc.idb, KEPT_AFTER_INIT.idb) || !sameSet(lc.ls, KEPT_AFTER_INIT.ls) || !(afterInit.inNs || []).length) {
-      errors.push(`[ehp-purge-init] purge de démarrage : il doit ne rester que l'espace du compte (${show(KEPT_AFTER_INIT)}, non vidé) ; reste ${show(lc)}, contenu de l'espace ${show(afterInit.inNs)}`);
+    // il ne reste du moteur que l'espace du compte (non vidé) ; un nom jamais amorcé est une écriture
+    const kept = entries(KEPT_AFTER_INIT);
+    const extra = minus(own(afterInit), kept);
+    const remnants = extra.filter((e) => entries(SEEDED_LC).includes(e));
+    const written = minus(extra, remnants);
+    const lost = minus(kept, own(afterInit));
+    if (remnants.length || lost.length || !(afterInit.inNs || []).length) {
+      errors.push(`[ehp-purge-init] purge de démarrage : il doit ne rester que l'espace du compte (${kept.join(', ')}, non vidé) ; restes ${show(remnants)}, manquants ${show(lost)}, contenu de l'espace ${show(afterInit.inNs)}`);
     }
+    if (written.length) errors.push(`[ehp-init-write] le moteur a écrit dans le stockage au démarrage (jugé quel que soit le nom) : ${written.join(', ')}`);
     const gone = missing(afterInit, FOREIGN);
     if (gone.length) errors.push(`[ehp-overpurge] la purge a touché le stockage d'un autre moteur : ${gone.join(', ')}`);
   }
@@ -491,44 +545,29 @@ export async function runEhp({ evalPage, engineStats, errors, result }) {
   if (s5.language !== 'de') errors.push(`[ehp-foreign] un evora:lang étranger a été appliqué (langue ${s5.language})`);
   const ids = JSON.parse(await evalPage('JSON.stringify(window.__ehp.ids)') || '{}');
   if ((ids.strangerErrors || []).length) errors.push(`[ehp-seed] les pages étrangères n'ont pas pu écrire au moteur : ${show(ids.strangerErrors)}`);
-  if (afterInit && strangers && strangers.storage && !strangers.storage.error) {
-    const a = lcOf(afterInit);
-    const b = lcOf(strangers.storage);
-    if (!sameSet(a.opfs, b.opfs) || !sameSet(a.idb, b.idb) || !sameSet(a.ls, b.ls) || show(afterInit.inNs) !== show(strangers.storage.inNs)) {
-      const removed = ['opfs', 'idb', 'ls'].some((k) => a[k].some((n) => !b[k].includes(n)));
-      errors.push(removed
-        ? `[ehp-foreign] une purge étrangère a eu effet : ${show(a)} -> ${show(b)}`
-        : `[ehp-session-write] le moteur a écrit dans le stockage pendant la séance : ${show(a)} -> ${show(b)}`);
+  // pendant la séance (ouverture, langue, thème, messages étrangers), en mode mémoire : rien ne
+  // change dans le stockage de l'origine, quel que soit le nom
+  if (afterInit) {
+    if (!readable(strangers && strangers.storage)) errors.push(`[ehp-seed] liste du stockage après la séance illisible : ${show(strangers && strangers.storage)}`);
+    else {
+      const a = [...entries(afterInit), ...inNsOf(afterInit)];
+      const b = [...entries(strangers.storage), ...inNsOf(strangers.storage)];
+      const removed = minus(a, b);
+      const added = minus(b, a);
+      if (removed.length) errors.push(`[ehp-foreign] du stockage a disparu pendant la séance (purge étrangère suivie d'effet) : ${removed.join(', ')}`);
+      if (added.length) errors.push(`[ehp-session-write] le moteur a écrit dans le stockage pendant la séance (jugé quel que soit le nom) : ${added.join(', ')}`);
     }
   }
 
   const purge = await step('purge');
   okAck(purge, 'purge');
-  if (purge && purge.atAck && !purge.atAck.error) {
-    const lc = lcOf(purge.atAck);
-    if (lc.opfs.length || lc.idb.length || lc.ls.length) errors.push(`[ehp-purge-ack] stockage du moteur non vide à l'accusé de purge : ${show(lc)}`);
-    const gone = missing(purge.atAck, FOREIGN);
-    if (gone.length) errors.push(`[ehp-overpurge] evora:purge a touché le stockage d'un autre moteur : ${gone.join(', ')}`);
-  } else errors.push(`[ehp-purge-ack] liste du stockage à l'accusé illisible : ${show(purge && purge.atAck)}`);
-  if (purge && purge.later && !purge.later.error && purge.atAck && !purge.atAck.error) {
-    const late = appeared(purge.atAck, purge.later);
-    if (late.length) errors.push(`[ehp-late-write] le moteur a écrit après la purge : ${late.join(', ')}`);
-  }
+  judgePurge(purge, '[ehp-purge-ack]', 'evora:purge {scope: "current"}', errors);
 
   const all = await step('purgeAll');
-  const reseeded = all && all.seeded && !all.seeded.error ? missing(all.seeded, { opfs: [...SEEDED_LC.opfs, ...FOREIGN.opfs], idb: [...SEEDED_LC.idb, ...FOREIGN.idb], ls: [...SEEDED_LC.ls, ...FOREIGN.ls] }) : ['tout'];
+  const reseeded = readable(all && all.seeded) ? minus(seededWant, entries(all.seeded)) : ['tout'];
   if (reseeded.length) errors.push(`[ehp-seed] second amorçage du stockage raté : ${all && all.seeded && all.seeded.error ? all.seeded.error : reseeded.join(', ')}`);
   okAck(all, 'purge (all)');
-  if (all && all.atAck && !all.atAck.error) {
-    const lc = lcOf(all.atAck);
-    if (lc.opfs.length || lc.idb.length || lc.ls.length) errors.push(`[ehp-purge-all] stockage du moteur non vide à l'accusé de evora:purge {scope: "all"} : ${show(lc)}`);
-    const gone = missing(all.atAck, FOREIGN);
-    if (gone.length) errors.push(`[ehp-overpurge] evora:purge {scope: "all"} a touché le stockage d'un autre moteur : ${gone.join(', ')}`);
-  } else errors.push(`[ehp-purge-all] liste du stockage à l'accusé de la purge totale illisible : ${show(all && all.atAck)}`);
-  if (all && all.later && !all.later.error && all.atAck && !all.atAck.error) {
-    const late = appeared(all.atAck, all.later);
-    if (late.length) errors.push(`[ehp-late-write] le moteur a écrit après la purge totale : ${late.join(', ')}`);
-  }
+  judgePurge(all, '[ehp-purge-all]', 'evora:purge {scope: "all"}', errors);
 
   // Le journal complet de la coquille : enveloppes, réponses interdites, evora:ready.
   const log = JSON.parse(await evalPage('JSON.stringify(window.__ehp.log)') || '[]');
