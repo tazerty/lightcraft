@@ -125,7 +125,8 @@ impl Options {
 /// Evora (E3): the UI language for the host's language tag. A language this build ships is used
 /// (`zh-Hans` and `zh-CN` give 简体中文, `fr` gives Français…). Bare `pt` (and any Portuguese other
 /// than an explicit `pt-BR`) is not mapped to a variant while D-23 is open; it shows English, like
-/// every language without a catalog here (ar, hi, id, it, ko, tr): the host's shell says so.
+/// every language without a catalog here (ar, hi, id, ko, tr): the host's shell says so. Italian
+/// (`it`) has its catalog upstream since v0.9.1 and is used as is.
 fn host_language(tag: &str) -> lightcraft_ui_egui::i18n::Locale {
     use lightcraft_ui_egui::i18n::Locale;
     let tag = tag.trim().replace('_', "-").to_ascii_lowercase();

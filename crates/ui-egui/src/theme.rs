@@ -826,7 +826,8 @@ mod tests {
             let regular = definitions.families.get(&FontFamily::Proportional).expect("regular family");
             let strong = definitions.families.get(&semibold_family()).expect("strong family");
             assert_eq!(regular.get(1..), strong.get(1..));
-            assert_eq!(definitions.font_data.len(), FontDefinitions::default().font_data.len() + 2 + craft.len());
+            // Evora (E10): egui's emoji face is not loaded, so the count starts from base_definitions().
+            assert_eq!(definitions.font_data.len(), base_definitions().font_data.len() + 2 + craft.len());
         }
     }
 }
