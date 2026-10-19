@@ -41,15 +41,17 @@ concurrency:
 
 env:
   # Tag amont épinglé et son commit (D-19) ; la branche doit s'appeler evora/<UPSTREAM_TAG>.
-  UPSTREAM_TAG: v0.7.1
-  UPSTREAM_COMMIT: 701f78ea2e586d4748705f10fdf5c4181dc1fd49
+  UPSTREAM_TAG: v0.9.1
+  UPSTREAM_COMMIT: 4f0b110bcbd2e350c6d97b47f1d824c2222295c4
   # Aucun rust-toolchain(.toml) dans le dépôt : version stable exacte, celle du job « Web (wasm) »
-  # réussi de la release amont v0.7.1 (rustc 1.99.0), conforme au README amont (Rust >= 1.95).
-  RUST_VERSION: "1.99.0"
+  # réussi de la release amont v0.9.1 (run 39093053532, rustc 1.99.1), conforme au README amont
+  # (Rust >= 1.95) et au rust-version du Cargo.toml (1.90).
+  RUST_VERSION: "1.99.1"
   # Doit être égal à la version de wasm-bindgen dans Cargo.lock (cargo xtask web le vérifie).
   WASM_BINDGEN_VERSION: "0.2.129"
-  # storytold/craft-fonts à la révision du release.yml amont au tag (« bump deliberately »).
-  CRAFT_FONTS_REV: 8dcdacd5153e64560d109541a47d806f26f048c0
+  # storytold/craft-fonts à la révision du release.yml amont au tag (« bump deliberately ») ; depuis
+  # v0.9.1, crates/engine/build.rs exige aussi Noto Sans Thai Regular quand CRAFT_FONTS_REQUIRED est posé.
+  CRAFT_FONTS_REV: 3d9ab3a132ed0eff457e424226a435a901da30d3
   # Outils des portes : binaires officiels épinglés par version ET par empreinte (digest publié par
   # GitHub pour l'asset de la release, relu le 2026-10-13).
   CARGO_DENY_VERSION: "0.20.2"
@@ -368,7 +370,7 @@ jobs:
             echo "- craft-fonts : $have (épinglé)"
             echo "- police chinoise servie à part : lightcraft_zh_hans.otf, $font o, sha256 $b, identique à $font_path de craft-fonts et à l'empreinte de son manifeste"
             echo "- licence : OFL-noto-sans-cjk-sc.txt identique à $lic_path ; $n_ofl fichiers OFL dans LICENSES/"
-            echo "- module wasm (polices japonaises BIZ UDPGothic et Inter embarquées) : $wasm o"
+            echo "- module wasm (Inter, police japonaise BIZ UDPGothic et police thaïe Noto Sans Thai embarquées) : $wasm o"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Test de fumée — sabotage CSP (doit échouer)
