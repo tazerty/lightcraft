@@ -14,6 +14,9 @@
 //   - les sélecteurs de présentation (U+FE0F), le ZWJ (U+200D) et le keycap (U+20E3).
 // Les autres symboles (★ ✓ ✕ → ⌘ ⇧ ≤…) sont inventoriés sans être interdits : leur rendu par une
 // police de texte est vérifié au rendu (test de fumée, commande web.renderAudit).
+// Les catalogues sont jugés TELS QU'AFFICHÉS (EVORA-REV-23) : après le catalogue de surcharge
+// d'affichage (ci-dessous), comme le fait tr() ; le compte brut, avant surcharge, est relevé pour
+// information. Une surcharge qui remplace un émoji par un autre émoji laisse donc la porte rouge.
 //
 // Patch E9 (D-16) : les termes sensibles sont comptés dans les catalogues TELS QU'AFFICHÉS, c'est-à-dire
 // après le catalogue de surcharge d'affichage crates/ui-egui/overrides/display-overrides.json
@@ -65,25 +68,31 @@ function scanText(text, onEmoji, onSymbol) {
 }
 
 export function auditCatalogs(root) {
+  const ov = loadOverrides(root);
   const dir = join(root, LOCALES);
   const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
   const emoji = [];
+  let rawEmoji = 0;
   const symbols = new Map();
   const seenKeys = new Set();
   let messages = 0;
+  const countRaw = (text) => { for (const ch of text) if (isEmoji(ch)) rawEmoji += 1; };
   for (const f of files) {
+    const code = f.replace(/-formats\.json$|\.json$/, '');
     const catalog = JSON.parse(readFileSync(join(dir, f), 'utf8'));
     for (const [key, value] of Object.entries(catalog)) {
       messages += 1;
       const where = (part) => `${f} ${part} ${JSON.stringify(key).slice(0, 80)}`;
       if (!seenKeys.has(key)) {
         seenKeys.add(key);
-        scanText(key, (ch) => emoji.push({ ch, where: where('(source anglaise)') }), (ch) => symbols.set(ch, (symbols.get(ch) || 0) + 1));
+        countRaw(key);
+        scanText(ov.shown(key, 'en', key), (ch) => emoji.push({ ch, where: where('(source anglaise, affichée)') }), (ch) => symbols.set(ch, (symbols.get(ch) || 0) + 1));
       }
-      scanText(String(value), (ch) => emoji.push({ ch, where: where('(traduction)') }), (ch) => symbols.set(ch, (symbols.get(ch) || 0) + 1));
+      countRaw(String(value));
+      scanText(ov.shown(key, code, String(value)), (ch) => emoji.push({ ch, where: where('(traduction, affichée)') }), (ch) => symbols.set(ch, (symbols.get(ch) || 0) + 1));
     }
   }
-  return { files: files.length, messages, sourceMessages: seenKeys.size, emoji, symbols };
+  return { files: files.length, messages, sourceMessages: seenKeys.size, emoji, rawEmoji, symbols };
 }
 
 function walkRust(dir, out) {
@@ -202,8 +211,10 @@ function report(root, rustBlocking, termsBlocking = false) {
   lines.push('');
   lines.push('| Portée | Émojis | Bloquant |');
   lines.push('|---|---|---|');
-  lines.push(`| Catalogues (clés et traductions) | ${cat.emoji.length} | oui |`);
+  lines.push(`| Catalogues (clés et traductions, tels qu'affichés après surcharge) | ${cat.emoji.length} | oui |`);
   lines.push(`| Littéraux du code d'interface | ${rs.emoji.length} | ${rustBlocking ? 'oui' : 'non (relevé)'} |`);
+  lines.push('');
+  lines.push(`Pour information : ${cat.rawEmoji} émoji(s) dans les catalogues avant surcharge (texte d'origine).`);
   lines.push('');
   for (const [title, list] of [['Catalogues', cat.emoji], ["Code d'interface", rs.emoji]]) {
     if (list.length === 0) continue;
@@ -263,6 +274,20 @@ function selftest() {
   const tYes = report(terms, false, true);
   checks.push(['termes avec surcharge : 0 affiché, la porte reste verte', tYes.tm.blocking === 0 && tYes.failed === false]);
   checks.push(['message entier surchargé par langue', loadOverrides(terms).shown('Adobe RGB', 'fr', 'Adobe RGB') === 'opRGB (fr)']);
+  // E10 jugé tel qu'affiché : un émoji couvert par une surcharge, puis la même surcharge défaite
+  const shownCase = mk('affiche', { 'Marked ⚠ in the list': 'Marqué ⚠ dans la liste' }, 'fn f() {}\n');
+  const sNo = report(shownCase, false);
+  checks.push(['émoji sans surcharge : 2 affichés, la porte rougit', sNo.cat.emoji.length === 2 && sNo.failed === true]);
+  mkdirSync(join(shownCase, 'crates/ui-egui/overrides'), { recursive: true });
+  writeFileSync(join(shownCase, OVERRIDES), JSON.stringify({ replace: [['\u26a0', '(!)']], messages: {} }));
+  const sYes = report(shownCase, false);
+  checks.push(['émoji remplacé par la surcharge : 0 affiché, 2 relevés avant surcharge, la porte reste verte',
+    sYes.cat.emoji.length === 0 && sYes.cat.rawEmoji === 2 && sYes.failed === false]);
+  writeFileSync(join(shownCase, OVERRIDES), JSON.stringify({ replace: [['\u26a0', '\u2705']], messages: {} }));
+  checks.push(['surcharge qui met un émoji à la place d\'un autre : la porte rougit', report(shownCase, false).failed === true]);
+  writeFileSync(join(shownCase, OVERRIDES), JSON.stringify({ replace: [['\u26a0', '(!)']], messages: { 'Marked ⚠ in the list': { xx: 'Marqué \u2705' } } }));
+  const sMsg = report(shownCase, false);
+  checks.push(['message entier surchargé avec un émoji : jugé tel qu\'affiché, la porte rougit', sMsg.cat.emoji.length === 1 && sMsg.failed === true]);
   const t = report(trapped, true);
   checks.push(['catalogue piégé : 2 émojis (✅ et le sélecteur U+FE0F de ▶️ ; ▶ seul est typographique)', t.cat.emoji.length === 2]);
   checks.push(['catalogue piégé : ★ inventorié, non interdit', t.cat.symbols.has('★')]);
