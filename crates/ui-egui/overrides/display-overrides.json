@@ -5,7 +5,9 @@
     "« replace » : remplacements de sous-chaînes, dans l'ordre, sur le texte affiché (traduction ou source anglaise).",
     "Les messages de tr() sont surchargés à l'exécution (i18n.rs), ceux de tr_format! à la compilation (build.rs), avec ce même fichier.",
     "Termes neutres provisoires, à valider avec la revue juridique (D-16) : LRCAT (format du catalogue importé), opRGB (nom normalisé CEI 61966-2-5 de l'espace Adobe RGB (1998)).",
-    "E10 (rendu) : ▸ (U+25B8) et ▾ (U+25BE) n'ont de glyphe dans aucune police de l'interface (mesuré par web.renderAudit) ; ils s'affichent › (U+203A) et ⌄ (U+2304)."
+    "E10 (rendu) : ▸ (U+25B8) et ▾ (U+25BE) n'ont de glyphe dans aucune police de l'interface (mesuré par web.renderAudit) ; ils s'affichent › (U+203A) et ⌄ (U+2304).",
+    "E10 (montée v0.9.1, EVORA-REV-24) : les lignes de What's New (docs/whats-new.md, affichées ligne à ligne par tr()) portent ⚠ (U+26A0, émoji : affiché « (!) », comme le code depuis EVORA-REV-07) et ✕ (U+2715, sans glyphe dans les polices de l'interface : affiché × U+00D7, comme le code depuis EVORA-REV-10).",
+    "E9 (montée v0.9.1, EVORA-REV-24) : la ligne de What's New sur les listes de mots-clés nomme l'éditeur d'un logiciel tiers en fin de ligne (« darktable, Adobe ») ; affichée sans ce nom, terme neutre provisoire à valider avec la revue juridique (D-16)."
   ],
   "replace": [
     ["Lightroom Classic", "LRCAT"],
@@ -13,7 +15,10 @@
     ["Adobe RGB (1998)", "opRGB"],
     ["Adobe RGB", "opRGB"],
     ["\u25b8", "\u203a"],
-    ["\u25be", "\u2304"]
+    ["\u25be", "\u2304"],
+    ["\u26a0", "(!)"],
+    ["\u2715", "\u00d7"],
+    ["darktable, Adobe", "darktable,"]
   ],
   "messages": {
     "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": {
