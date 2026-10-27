@@ -29,8 +29,14 @@
 export const NS = 'ab'.repeat(32);
 export const OTHER_NS = 'cd'.repeat(32);
 export const PHOTO = 'evora-smoke.jpg';
+// EVORA-REV-29 : deuxième photo (ouverte par la coquille), troisième (par le sélecteur d'Evora).
+export const PHOTO2 = 'seconde-photo.jpg';
+export const PHOTO3 = 'troisieme-photo.jpg';
 // Ce que le scénario exerce : le moteur doit déclarer exactement cela, ni plus ni moins.
-export const EXERCISED = ['doc.open', 'live.lang', 'live.theme', 'storage.memory', 'storage.purge'];
+export const EXERCISED = ['doc.open', 'doc.save', 'doc.saved-ack', 'doc.dirty', 'doc.multi', 'doc.request-save', 'export.drive', 'pick.drive',
+  'command', 'storage.memory', 'storage.purge', 'live.lang', 'live.theme', 'ui.focus-out'];
+// La liste blanche compilée du moteur (Revela, CdC §5.3) ; toute autre commande est refusée (capability).
+export const COMMANDS = ['revela.apply', 'develop.get', 'develop.controls'];
 
 // Défauts des moteurs factices et étiquette d'erreur attendue (null : témoin conforme, doit être vert).
 export const WITNESS_FLAWS = [
@@ -56,6 +62,17 @@ export const WITNESS_FLAWS = [
   ['ouverture-feinte', '[ehp-open]'],
   ['langue-ignoree', '[ehp-live]'],
   ['bavard', '[ehp-mute]'],
+  // EVORA-REV-29 : pont d'enregistrement, commandes, exports, sélecteur, sortie au clavier
+  ['sauve-sans-accuse', '[ehp-sack]'],
+  ['enveloppe-fausse', '[ehp-envelope-save]'],
+  ['commande-ouverte', '[ehp-command]'],
+  ['application-ignoree', '[ehp-apply]'],
+  ['modifie-sans-docref', '[ehp-dirty]'],
+  ['export-permute', '[ehp-export-docref]'],
+  ['telechargement', '[ehp-download]'],
+  ['selecteur-absent', '[ehp-pick]'],
+  ['sans-focus-out', '[ehp-focus-out]'],
+  ['demo-au-demarrage', '[ehp-boot-neutral]'],
 ];
 
 // Témoin sur le VRAI moteur : effacements sans effet dans sa page (sabotage.js), purges qui ne
@@ -72,6 +89,24 @@ export const SABOTAGE_JS = `'use strict';
   if (del) F.prototype.deleteDatabase = function () { return del.call(this, 'evora-temoin-inexistant'); };
   const S = globalThis.Storage;
   if (S) S.prototype.removeItem = function () {};
+})();
+`;
+
+// EVORA-REV-29 : chargé avant tout autre script de la page du moteur (vrai ou factice) dans le banc :
+// relève tout téléchargement par lien (<a download>.click()), le repli download() de l'amont. Le banc
+// exige 0 ; Chrome est en plus réglé pour annoncer tout téléchargement (Browser.downloadWillBegin).
+export const SENTINEL_JS = `'use strict';
+(() => {
+  const seen = [];
+  Object.defineProperty(globalThis, '__evoraDownloads', { value: seen });
+  // HTMLElement.prototype.click : la méthode qu'appelle <a>.click(), y compris par les liaisons web-sys
+  const E = globalThis.HTMLElement;
+  if (!E) return;
+  const click = E.prototype.click;
+  E.prototype.click = function () {
+    if (this instanceof HTMLAnchorElement && this.hasAttribute('download')) seen.push(String(this.getAttribute('download') || '?'));
+    return click.call(this);
+  };
 })();
 `;
 
@@ -195,6 +230,15 @@ export const HARNESS_JS = `'use strict';
       plain, keys: plain ? Object.keys(d) : [], v: plain ? d.v : null, type: plain ? d.type : null, id: plain ? d.id : null,
       re: plain && 're' in d ? d.re : null, payloadPlain: plain && plainOf(d.payload), payload: plain ? clone(d.payload) : null,
     };
+    // EVORA-REV-29 : octets d'evora:save (enveloppe revela-save) et d'evora:export (début du fichier)
+    const bytes = plain && plainOf(d.payload) ? d.payload.bytes : undefined;
+    if (bytes !== undefined) {
+      entry.binary = bytes instanceof ArrayBuffer;
+      if (entry.binary && d.type === 'evora:save') {
+        try { entry.envelope = JSON.parse(new TextDecoder().decode(bytes)); } catch (err) { entry.envelope = { error: String(err) }; }
+      }
+      if (entry.binary && d.type === 'evora:export') entry.magic = Array.from(new Uint8Array(bytes.slice(0, 3)), (b) => b.toString(16).padStart(2, '0')).join('');
+    }
     log.push(entry);
     for (const w of waiters.slice()) if (w.pred(entry)) { waiters.splice(waiters.indexOf(w), 1); w.ok(entry); }
   });
@@ -304,7 +348,55 @@ export const HARNESS_JS = `'use strict';
       return { seeded, ack: ack && ack.payload, atAck, later: await observe() };
     },
   };
-  window.__ehp = { log, ids, run: async (step) => JSON.stringify(await steps[step]()) };
+  // EVORA-REV-29 : échanges paramétrés que smoke.mjs déroule (ehp-bench.mjs, runDocs).
+  const photo = async (fg, bg) => {
+    const c = new OffscreenCanvas(96, 64);
+    const g = c.getContext('2d');
+    g.fillStyle = bg; g.fillRect(0, 0, 96, 64); g.fillStyle = fg; g.fillRect(24, 16, 48, 32);
+    return (await c.convertToBlob({ type: 'image/jpeg', quality: 0.9 })).arrayBuffer();
+  };
+  const plainEntry = (m) => (m ? { type: m.type, id: m.id, re: m.re, payload: m.payload, envelope: m.envelope, magic: m.magic, binary: m.binary, t: m.t } : null);
+  const api = {
+    // une requête de la coquille et la première réponse du moteur dont le type est attendu
+    req: async (type, payload, replies, ms) => {
+      const id = ulid();
+      const at = log.length;
+      toEngine({ v: 1, type, id, payload });
+      const reply = await waitFor((m) => m.fromEngine && m.re === id && replies.includes(m.type), ms || 15000);
+      return { id, at, reply: plainEntry(reply) };
+    },
+    // une réponse de la coquille (evora:saved, evora:ack) à un message du moteur
+    answer: async (type, re, payload) => { toEngine({ v: 1, type, id: ulid(), re, payload }); return { ok: true }; },
+    // ouvre une photo neuve (octets transférés) sous un docRef neuf
+    open: async (name, fg, bg) => {
+      const bytes = await photo(fg, bg);
+      const id = ulid();
+      const docRef = ulid();
+      const at = log.length;
+      toEngine({ v: 1, type: 'evora:open', id, payload: { docRef, name, bytes } }, [bytes]);
+      const ack = await ackOf(id, 60000);
+      return { id, docRef, at, ack: ack && ack.payload, transferred: bytes.byteLength === 0 };
+    },
+    // attend un message du moteur depuis l'indice at (type, et charge partielle égale)
+    wait: async (at, type, like, ms) => {
+      const fits = (m) => m.fromEngine && m.type === type && Object.entries(like || {}).every(([k, v]) => (m.payload || {})[k] === v);
+      const old = log.slice(at).find(fits);
+      return plainEntry(old || await waitFor(fits, ms || 8000));
+    },
+    // les messages du moteur depuis l'indice at
+    since: async (at) => log.slice(at).filter((m) => m.fromEngine).map(plainEntry),
+    mark: async () => log.length,
+    // la coquille répond « open » à un evora:pick : une photo neuve, puis l'accusé de clôture
+    servePick: async (pickId, name) => {
+      const opened = await api.open(name, '#111827', '#F59E0B');
+      toEngine({ v: 1, type: 'evora:ack', id: ulid(), re: pickId, payload: { ok: true } });
+      return opened;
+    },
+  };
+  const wrap = (f) => async (...a) => JSON.stringify(await f(...a));
+  window.__ehp = { log, ids, run: async (step) => JSON.stringify(await steps[step]()),
+    req: wrap(api.req), answer: wrap(api.answer), open: wrap(api.open), wait: wrap(api.wait), since: wrap(api.since), mark: wrap(api.mark),
+    servePick: wrap(api.servePick), ulid };
 })();
 `;
 
@@ -324,20 +416,80 @@ export function parentPage({ engineUrl, engineOrigin, foreignOrigin }) {
 
 export const WITNESS_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>moteur factice</title><link rel="icon" href="data:,">
 <style>html,body{margin:0;height:100%}canvas{width:100%;height:100%;display:block}</style></head>
-<body><canvas id="lightcraft_canvas" width="320" height="200"></canvas><script src="witness.js"></script></body></html>`;
+<body><canvas id="lightcraft_canvas" width="320" height="200"></canvas><script src="/__evora/sentinel.js"></script><script src="witness.js"></script></body></html>`;
 
 // Un pont EHP écrit en JavaScript, conforme sauf le défaut demandé par ?flaw= (un seul à la fois).
+// EVORA-REV-29 : documents de la coquille (un docRef par photo), enveloppe revela-save, accusé
+// d'enregistrement, liste blanche de commandes, exports vers Drive, sélecteur d'Evora, F6 et Ctrl+S.
 export const WITNESS_JS = `'use strict';
 (() => {
   const flaw = new URLSearchParams(location.search).get('flaw') || 'aucun';
   const C = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const ulid = () => Array.from(crypto.getRandomValues(new Uint8Array(26)), (b) => C[b & 31]).join('');
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
-  const st = { language: 'en', dark: true, evora: true, photos: 3, active: null, ns: '', inited: false, readyId: null, seen: new Set() };
-  globalThis.lightcraft = { command: async (id) => {
-    if (id !== 'web.stats') throw new Error('commande inconnue');
-    return JSON.stringify({ language: st.language, theme: { evora: st.evora, dark: st.dark, accent: '#4f46e5' }, storage: 'memory',
-      photos: st.photos, active: st.active, activeThumb: st.active !== null, activeFailure: null, renderQueue: 0, rendersInFlight: 0 });
+  const st = { language: 'en', dark: true, evora: true, photos: flaw === 'demo-au-demarrage' ? 24 : 0, ns: '', inited: false, readyId: null,
+    seen: new Set(), caps: [], docs: [], active: null, nextPhoto: 100 };
+  const docOf = (ref) => st.docs.find((d) => d.docRef === ref) || null;
+  const activeDoc = () => docOf(st.active);
+  let send = () => null;
+  const tellDirty = (d) => {
+    const dirty = d.exposure !== d.baseline;
+    if (d.told === dirty) return;
+    d.told = dirty;
+    send('evora:dirty', flaw === 'modifie-sans-docref' ? { dirty } : { dirty, docRef: d.docRef });
+  };
+  const xmpOf = (d) => '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><lc:settings>'
+    + JSON.stringify({ light: { exposure: d.exposure } }) + '</lc:settings></x:xmpmeta><?xpacket end="w"?>';
+  const saveDoc = (d, re) => {
+    const env = { format: 'revela-save', version: 1, settings: { light: { exposure: d.exposure }, process: 2 }, process: 2, engine: '0.14.0',
+      meta: { rating: 0, label: null, flag: 'none' }, xmp: xmpOf(d) };
+    if (flaw === 'enveloppe-fausse') delete env.xmp;
+    const bytes = new TextEncoder().encode(JSON.stringify(env)).buffer;
+    const id = send('evora:save', { docRef: d.docRef, name: d.name + '.revela.json', saveAs: false, bytes }, re, [bytes]);
+    d.inflight.push({ id, exposure: d.exposure });
+    if (flaw === 'sauve-sans-accuse') { d.baseline = d.exposure; tellDirty(d); }
+  };
+  const exportFile = (d, other) => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70]).buffer;
+    const name = d.name.replace(/\\.[^.]*$/, '') + '.jpg';
+    if (flaw === 'telechargement') {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+      a.download = name;
+      a.click();
+      return;
+    }
+    const docRef = flaw === 'export-permute' && other ? other.docRef : d.docRef;
+    send('evora:export', { docRef, name, mime: 'image/jpeg', bytes }, null, [bytes]);
+  };
+  globalThis.lightcraft = { command: async (id, text) => {
+    const p = JSON.parse(text || '{}');
+    if (id === 'web.stats') {
+      const a = activeDoc();
+      return JSON.stringify({ language: st.language, theme: { evora: st.evora, dark: st.dark, accent: '#4f46e5' }, storage: 'memory',
+        photos: st.photos, active: a ? a.name : null, activeThumb: !!a, activeFailure: null, renderQueue: 0, rendersInFlight: 0,
+        host: { docs: st.docs.map((d) => ({ docRef: d.docRef, photo: d.photo, name: d.name, dirty: d.exposure !== d.baseline, inFlight: d.inflight.length })),
+          active: st.active, autoWrite: false, neutral: { bench: false, backup: false, restore: false } } });
+    }
+    if (id === 'develop.set') {
+      const d = activeDoc();
+      if (!d) throw new Error('no photo');
+      d.exposure = p.value;
+      setTimeout(() => tellDirty(d), 50);
+      return JSON.stringify({ ok: true });
+    }
+    if (id === 'app.export') {
+      const list = (p.ids || []).map((n) => st.docs.find((d) => d.photo === n)).filter(Boolean);
+      list.forEach((d, i) => exportFile(d, list[(i + 1) % list.length]));
+      return JSON.stringify({ files: list.map((d) => d.name) });
+    }
+    if (id === 'file.addPhotos') {
+      if (flaw !== 'selecteur-absent') {
+        send('evora:pick', { purpose: 'open', accept: ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.dng'], multiple: true });
+      }
+      return 'null';
+    }
+    throw new Error('commande inconnue');
   } };
   const lcRoot = (n) => /^(library|originals|thumbs|active-library)$/.test(n) || /^library-[A-Za-z0-9-]{1,64}$/.test(n);
   const covers = (scope, n, idb) => {
@@ -373,20 +525,54 @@ export const WITNESS_JS = `'use strict';
     }
     for (const k of Object.keys(localStorage)) if (flaw === 'purge-excessive' || k.startsWith('lightcraft')) localStorage.removeItem(k);
   };
+  const command = (p) => {
+    if (!${JSON.stringify(COMMANDS)}.includes(p.command) && flaw !== 'commande-ouverte') return { ok: false, code: 'capability' };
+    if (flaw === 'commande-ouverte' && !${JSON.stringify(COMMANDS)}.includes(p.command)) return { ok: true, result: null };
+    const q = p.params || {};
+    if (p.command === 'develop.controls') return { ok: true, result: [{ id: 'light.exposure', value: (activeDoc() || {}).exposure || 0 }] };
+    const d = docOf(q.docRef);
+    if (typeof q.docRef !== 'string') return { ok: false, code: 'invalid_content' };
+    if (!d) return { ok: false, code: 'not_found' };
+    if (p.command === 'develop.get') return { ok: true, result: { light: { exposure: d.exposure }, process: 2 } };
+    const hasS = 'settings' in q;
+    const hasX = 'xmp' in q;
+    if (hasS === hasX) return { ok: false, code: 'invalid_content' };
+    let exposure = d.exposure;
+    if (hasS) exposure = ((q.settings || {}).light || {}).exposure ?? exposure;
+    else {
+      const m = /<lc:settings>(.*?)<\\/lc:settings>/.exec(String(q.xmp));
+      if (!m) return { ok: false, code: 'invalid_content' };
+      exposure = ((JSON.parse(m[1]) || {}).light || {}).exposure ?? exposure;
+    }
+    if (flaw !== 'application-ignoree') d.exposure = exposure;
+    if (q.baseline !== false) d.baseline = d.exposure;
+    tellDirty(d);
+    return { ok: true, result: { applied: true, dirty: d.exposure !== d.baseline } };
+  };
   (async () => {
     if (window.parent === window) return;
     const cfg = await (await fetch('evora-host.json', { cache: 'no-store' })).json();
     const admitted = Array.isArray(cfg.parentOrigins) ? cfg.parentOrigins : [];
     const origin = (location.ancestorOrigins && location.ancestorOrigins[0]) || '';
     if (!admitted.includes(origin) && flaw !== 'bavard') return;
-    const send = (type, payload, re) => {
+    send = (type, payload, re, transfer) => {
       const m = { v: 1, type, id: ulid(), payload };
       if (re) m.re = re;
       if (flaw === 'champ-en-trop') m.ts = Date.now();
-      parent.postMessage(m, origin);
+      parent.postMessage(m, origin, transfer || []);
       return m.id;
     };
-    const ack = (re) => send('evora:ack', { ok: true }, re);
+    const ack = (re, extra) => send('evora:ack', Object.assign({ ok: true }, extra || {}), re);
+    addEventListener('keydown', (e) => {
+      if (e.key === 'F6' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && st.caps.includes('ui.focus-out')) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (flaw !== 'sans-focus-out') send('evora:focus-out', {});
+      } else if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey) && st.caps.includes('doc.save')) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        const d = activeDoc();
+        if (d && d.exposure !== d.baseline) saveDoc(d, null);
+      }
+    }, true);
     addEventListener('message', async (e) => {
       if (flaw !== 'etranger' && (e.source !== parent || e.origin !== origin)) return;
       const d = e.data;
@@ -398,22 +584,50 @@ export const WITNESS_JS = `'use strict';
         if (st.inited || d.re !== st.readyId) return;
         st.inited = true;
         st.ns = p.storageNs;
+        st.caps = p.capabilities || [];
         if (flaw !== 'sans-purge-init') await purge({ keep: st.ns });
         if (flaw === 'ecriture-au-demarrage') localStorage.setItem('egui_memory_ron', '{}');
         st.language = p.engineLang || 'en';
         st.dark = p.theme === 'dark';
         ack(d.id);
       } else if (d.type === 'evora:open' && st.inited) {
-        if (flaw !== 'ouverture-feinte') { st.photos += 1; st.active = p.name; }
+        if (flaw !== 'ouverture-feinte') {
+          st.photos += 1;
+          st.docs.push({ docRef: p.docRef, name: p.name, photo: (st.nextPhoto += 1), exposure: 0, baseline: 0, told: null, inflight: [] });
+          st.active = p.docRef;
+        }
         if (flaw === 'ecriture-en-seance') await put('library/catalog.snap');
         if (offName[flaw]) await offName[flaw]();
         ack(d.id);
+        const doc = docOf(p.docRef);
+        if (doc) { tellDirty(doc); send('evora:active', { docRef: doc.docRef }); }
       } else if (d.type === 'evora:lang' && st.inited) {
         if (flaw !== 'langue-ignoree') st.language = p.engineLang || 'en';
         ack(d.id);
       } else if (d.type === 'evora:theme' && st.inited) {
         st.dark = p.theme === 'dark';
         ack(d.id);
+      } else if (d.type === 'evora:request-save' && st.inited) {
+        const targets = p.docRef ? [docOf(p.docRef)] : st.docs.slice();
+        if (p.docRef && !targets[0]) { ack(d.id, { ok: false, code: 'not_found' }); return; }
+        let re = d.id;
+        for (const t of targets) if (t.exposure !== t.baseline) { saveDoc(t, re); re = null; }
+        if (re) ack(d.id, { code: 'clean' });
+      } else if (d.type === 'evora:saved' && st.inited) {
+        const doc = st.docs.find((x) => x.inflight.some((f) => f.id === d.re));
+        if (!doc) return;
+        const f = doc.inflight.splice(doc.inflight.findIndex((x) => x.id === d.re), 1)[0];
+        if (p.ok && flaw !== 'sauve-sans-accuse') { doc.baseline = f.exposure; tellDirty(doc); }
+      } else if (d.type === 'evora:command' && st.inited) {
+        const r = command(p);
+        send('evora:ack', r.ok ? { ok: true, result: r.result } : { ok: false, code: r.code }, d.id);
+      } else if (d.type === 'evora:activate' && st.inited) {
+        const doc = docOf(p.docRef);
+        if (!doc) { ack(d.id, { ok: false, code: 'not_found' }); return; }
+        const was = st.active;
+        st.active = doc.docRef;
+        ack(d.id);
+        if (was !== doc.docRef) send('evora:active', { docRef: doc.docRef });
       } else if (d.type === 'evora:purge' && st.inited) {
         const scope = p.scope === 'all' && flaw !== 'purge-all-partielle' ? { all: true } : { current: st.ns };
         if (flaw === 'accuse-avant-purge') { ack(d.id); await sleep(1500); await purge(scope); return; }
@@ -422,9 +636,9 @@ export const WITNESS_JS = `'use strict';
         if (flaw === 'ecriture-apres-purge') setTimeout(() => put('lightcraft-ns-' + st.ns + '/library/catalog.snap'), 300);
       }
     });
-    const caps = ['doc.open', 'storage.memory', 'storage.purge', 'live.lang', 'live.theme'];
-    if (flaw === 'capacite-en-trop') caps.push('doc.save');
-    const payload = { app: 'revela', version: '0.7.1', ehp: '1.0', capabilities: caps };
+    const caps = ${JSON.stringify(EXERCISED)};
+    if (flaw === 'capacite-en-trop') caps.push('media.need');
+    const payload = { app: 'revela', version: '0.14.0', ehp: '1.0', capabilities: caps };
     st.readyId = send('evora:ready', payload);
     if (flaw === 'double-ready') send('evora:ready', payload);
   })();
@@ -467,7 +681,8 @@ const judgePurge = (r, tag, what, errors) => {
 };
 
 // Les étapes du scénario « pont-ehp », vues de la coquille (log) et du moteur (web.stats).
-export async function runEhp({ evalPage, engineStats, errors, result }) {
+export async function runEhp(ctx) {
+  const { evalPage, engineStats, errors, result } = ctx;
   const step = async (name) => {
     const t0 = Date.now();
     const raw = await evalPage(`window.__ehp.run(${JSON.stringify(name)})`);
@@ -515,6 +730,15 @@ export async function runEhp({ evalPage, engineStats, errors, result }) {
     if (gone.length) errors.push(`[ehp-overpurge] la purge a touché le stockage d'un autre moteur : ${gone.join(', ')}`);
   }
 
+  // EVORA-REV-29 : démarrage neutre sous le pont (ni photos de démonstration, ni ?bench, ni
+  // sauvegarde ou restauration de photothèque, écriture automatique du XMP coupée)
+  const h1 = s1.host || {};
+  const neutral = h1.neutral || {};
+  if (s1.photos !== 0 || neutral.bench !== false || neutral.backup !== false || neutral.restore !== false || h1.autoWrite !== false
+    || !Array.isArray(h1.docs) || h1.docs.length !== 0) {
+    errors.push(`[ehp-boot-neutral] démarrage sous le pont non neutre (attendu 0 photo, ni banc, ni sauvegarde, ni restauration, XMP manuel) : ${show({ photos: s1.photos, host: s1.host })}`);
+  }
+
   const before = s1.photos;
   const open = await step('open');
   okAck(open, 'open');
@@ -530,6 +754,8 @@ export async function runEhp({ evalPage, engineStats, errors, result }) {
   if (s2.photos !== before + 1 || s2.active !== PHOTO || s2.activeThumb !== true || s2.activeFailure) {
     errors.push(`[ehp-open] photo non ouverte ou non rendue (photos ${before} -> ${s2.photos}, active ${show(s2.active)}, vignette ${s2.activeThumb}, échec ${show(s2.activeFailure)})`);
   }
+  const ids0 = JSON.parse(await evalPage('JSON.stringify(window.__ehp.ids)') || '{}');
+  await runDocs({ ...ctx, docA: ids0.docRef, openId: ids0.open });
 
   const lang = await step('lang');
   okAck(lang, 'lang');
@@ -602,6 +828,263 @@ export function judgeLog(log, ids, errors) {
       errors.push(`[ehp-envelope] evora:ack hors schéma : ${show(p)}`);
     }
   }
+  // EVORA-REV-29 : schémas des messages du pont d'enregistrement (HOST-PROTOCOL §4.4, §7.10)
+  const known = ['evora:ready', 'evora:failed', 'evora:ack', 'evora:dirty', 'evora:save', 'evora:export', 'evora:pick', 'evora:focus-out',
+    'evora:active', 'evora:closed'];
+  for (const m of log.filter((x) => x.fromEngine)) {
+    const p = m.payload || {};
+    const keys = Object.keys(p);
+    if (!known.includes(m.type)) errors.push(`[ehp-envelope] type de message inattendu : ${show(m.type)}`);
+    if (m.type === 'evora:dirty' && (typeof p.dirty !== 'boolean' || !ULID.test(p.docRef || '') || keys.some((k) => !['dirty', 'docRef'].includes(k)))) {
+      errors.push(`[ehp-dirty] evora:dirty hors schéma ou sans docRef (doc.multi) : ${show(p)}`);
+    }
+    if (m.type === 'evora:save' && (!ULID.test(p.docRef || '') || typeof p.name !== 'string' || p.saveAs !== false || !m.binary
+      || keys.some((k) => !['docRef', 'name', 'saveAs', 'bytes'].includes(k)))) {
+      errors.push(`[ehp-envelope-save] evora:save hors schéma : ${show({ payload: p, binary: m.binary })}`);
+    }
+    if (m.type === 'evora:export' && ((p.docRef !== undefined && !ULID.test(p.docRef)) || typeof p.name !== 'string' || typeof p.mime !== 'string' || !m.binary
+      || keys.some((k) => !['docRef', 'name', 'mime', 'bytes'].includes(k)))) {
+      errors.push(`[ehp-export-docref] evora:export hors schéma : ${show({ payload: p, binary: m.binary })}`);
+    }
+    if (['evora:active', 'evora:closed'].includes(m.type) && (!ULID.test(p.docRef || '') || keys.length !== 1)) {
+      errors.push(`[ehp-multi] ${m.type} hors schéma : ${show(p)}`);
+    }
+    if (m.type === 'evora:focus-out' && keys.length) errors.push(`[ehp-focus-out] evora:focus-out porte une charge : ${show(p)}`);
+  }
+}
+
+// --- EVORA-REV-29 : documents de la coquille, enregistrement, commandes, exports, sélecteur, clavier --------------
+
+// L'enveloppe revela-save v1 (CdC de Revela §5.2), jugée sans interpréter le XMP.
+const judgeEnvelope = (env, exposure, version, errors, what) => {
+  const keys = ['format', 'version', 'settings', 'process', 'engine', 'meta', 'xmp'];
+  const e = env || {};
+  const problems = [];
+  if (e.format !== 'revela-save' || e.version !== 1) problems.push('format ou version');
+  if (!e.settings || typeof e.settings !== 'object' || Array.isArray(e.settings)) problems.push('settings');
+  else if (exposure !== undefined && Math.abs(((e.settings.light || {}).exposure ?? NaN) - exposure) > 1e-6) problems.push(`settings.light.exposure ${show((e.settings.light || {}).exposure)} au lieu de ${exposure}`);
+  if (e.process === undefined || e.process === null) problems.push('process');
+  if (e.engine !== version) problems.push(`engine ${show(e.engine)} au lieu de ${version}`);
+  if (!e.meta || typeof e.meta !== 'object' || !('rating' in e.meta) || !('label' in e.meta) || !('flag' in e.meta)) problems.push('meta {rating, label, flag}');
+  if (typeof e.xmp !== 'string' || !/^\s*(<\?xpacket|<x:xmpmeta)/.test(e.xmp)) problems.push('xmp');
+  if (Object.keys(e).some((k) => !keys.includes(k))) problems.push('champ en trop');
+  if (problems.length) errors.push(`[ehp-envelope-save] enveloppe de ${what} non conforme (${problems.join(', ')}) : ${show(env).slice(0, 300)}`);
+};
+
+export async function runDocs({ evalPage, engineStats, engineEval, downloads, errors, result, docA, openId }) {
+  const call = async (fn, ...args) => JSON.parse(await evalPage(`window.__ehp.${fn}(...${JSON.stringify(args)})`) || 'null');
+  const engine = async (id, params) => {
+    try {
+      return { ok: true, value: JSON.parse(await engineEval(`globalThis.lightcraft.command(${JSON.stringify(id)}, ${JSON.stringify(JSON.stringify(params || {}))})`, 60000)) };
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    }
+  };
+  const docs = async () => ((await engineStats()).host || {}).docs || [];
+  const docOf = async (ref) => (await docs()).find((d) => d.docRef === ref) || null;
+  const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const trace = (result.ehpDocs ||= []);
+  const note = (k, v) => trace.push({ [k]: v });
+  const version = (((await call('since', 0)) || []).find((m) => m.type === 'evora:ready') || { payload: {} }).payload.version;
+  const cmd = async (command, params) => (await call('req', 'evora:command', { command, params }, ['evora:ack'], 20000)).reply;
+  const dirtyMsgs = (list, ref, value) => list.filter((m) => m.type === 'evora:dirty' && m.payload.docRef === ref && (value === undefined || m.payload.dirty === value));
+
+  // 1. La photo ouverte est un document propre, et le document devant
+  const fromOpen = await call('since', 0);
+  const openAck = fromOpen.findIndex((m) => m.type === 'evora:ack' && m.re === openId);
+  const afterOpen = openAck >= 0 ? fromOpen.slice(openAck) : [];
+  await pause(1500);
+  const settled = [...afterOpen, ...(await call('since', 0)).slice(fromOpen.length)];
+  if (!dirtyMsgs(settled, docA, false).length || dirtyMsgs(settled, docA, true).length) {
+    errors.push(`[ehp-dirty] après l'ouverture, evora:dirty {dirty: false, docRef} attendu, sans modification : ${show(settled.filter((m) => m.type === 'evora:dirty').map((m) => m.payload))}`);
+  }
+  if (!settled.some((m) => m.type === 'evora:active' && m.payload.docRef === docA)) errors.push(`[ehp-multi] pas d'evora:active pour le document ouvert ${docA}`);
+  const dA = await docOf(docA);
+  if (!dA || dA.dirty !== false) errors.push(`[ehp-dirty] web.stats ne montre pas le document ${docA} propre : ${show(await docs())}`);
+  const photoA = dA ? dA.photo : null;
+
+  // 2. revela.apply {settings} : appliqué, comme base (aucune modification annoncée)
+  let at = await call('mark');
+  const apply = await cmd('revela.apply', { docRef: docA, settings: { light: { exposure: 0.75 } } });
+  note('applySettings', apply && apply.payload);
+  if (!apply || apply.payload.ok !== true || !apply.payload.result || apply.payload.result.applied !== true || apply.payload.result.dirty !== false) {
+    errors.push(`[ehp-apply] revela.apply {settings} non appliqué ou annoncé modifié : ${show(apply && apply.payload)}`);
+  }
+  const getA = await cmd('develop.get', { docRef: docA });
+  if (!getA || getA.payload.ok !== true || Math.abs((((getA.payload.result || {}).light || {}).exposure ?? NaN) - 0.75) > 1e-6) {
+    errors.push(`[ehp-apply] develop.get après revela.apply : exposition 0.75 attendue : ${show(getA && getA.payload).slice(0, 200)}`);
+  }
+  await pause(600);
+  if (dirtyMsgs(await call('since', at), docA, true).length) errors.push('[ehp-apply] revela.apply {baseline par défaut} a marqué la photo modifiée');
+
+  // 3. Machine d'enregistrement (S-ACK) : modifié, enregistrement refusé, changé pendant l'envoi, puis enregistré
+  at = await call('mark');
+  const set1 = await engine('develop.set', { control: 'light.exposure', value: 1.25 });
+  const d1 = await call('wait', at, 'evora:dirty', { docRef: docA, dirty: true }, 8000);
+  if (!set1.ok || !d1) errors.push(`[ehp-dirty] une modification n'a pas donné evora:dirty {dirty: true, docRef} : ${show(set1)}`);
+  const r1 = await call('req', 'evora:request-save', { reason: 'user', docRef: docA }, ['evora:save', 'evora:ack'], 15000);
+  const s1 = r1.reply && r1.reply.type === 'evora:save' ? r1.reply : null;
+  if (!s1) errors.push(`[ehp-sack] evora:request-save d'une photo modifiée sans evora:save : ${show(r1.reply)}`);
+  else {
+    if (s1.payload.docRef !== docA || s1.payload.name !== `${PHOTO}.revela.json`) errors.push(`[ehp-envelope-save] evora:save : docRef ou nom inattendus : ${show(s1.payload)}`);
+    judgeEnvelope(s1.envelope, 1.25, version, errors, 'S1');
+    await call('answer', 'evora:saved', s1.id, { ok: false, error: 'server' });
+    await pause(900);
+    const dS1 = await docOf(docA);
+    if (dirtyMsgs(await call('since', d1 ? at : r1.at), docA, false).length || !dS1 || dS1.dirty !== true) {
+      errors.push(`[ehp-sack] après evora:save puis evora:saved {ok: false}, la photo doit rester modifiée : ${show(dS1)}`);
+    }
+  }
+  at = await call('mark');
+  const r2 = await call('req', 'evora:request-save', { reason: 'autosave', docRef: docA }, ['evora:save', 'evora:ack'], 15000);
+  const s2 = r2.reply && r2.reply.type === 'evora:save' ? r2.reply : null;
+  if (!s2) errors.push(`[ehp-sack] après un enregistrement refusé, la photo doit rester à enregistrer : ${show(r2.reply)}`);
+  await engine('develop.set', { control: 'light.exposure', value: 1.5 });
+  if (s2) {
+    await pause(500);
+    await call('answer', 'evora:saved', s2.id, { ok: true, version: 2 });
+    await pause(900);
+    const dS2 = await docOf(docA);
+    if (dirtyMsgs(await call('since', at), docA, false).length || !dS2 || dS2.dirty !== true) {
+      errors.push(`[ehp-sack] modifiée après l'envoi de son evora:save, la photo doit rester modifiée malgré evora:saved {ok: true} : ${show(dS2)}`);
+    }
+  }
+  at = await call('mark');
+  const r3 = await call('req', 'evora:request-save', { reason: 'user', docRef: docA }, ['evora:save', 'evora:ack'], 15000);
+  const s3 = r3.reply && r3.reply.type === 'evora:save' ? r3.reply : null;
+  if (!s3) errors.push(`[ehp-sack] troisième evora:request-save sans evora:save : ${show(r3.reply)}`);
+  else {
+    judgeEnvelope(s3.envelope, 1.5, version, errors, 'S3');
+    await call('answer', 'evora:saved', s3.id, { ok: true, version: 3 });
+    const clean = await call('wait', at, 'evora:dirty', { docRef: docA, dirty: false }, 8000);
+    const dS3 = await docOf(docA);
+    if (!clean || !dS3 || dS3.dirty !== false) errors.push(`[ehp-sack] evora:saved {ok: true} d'une photo inchangée : evora:dirty {dirty: false} attendu : ${show(dS3)}`);
+  }
+  const r4 = await call('req', 'evora:request-save', { reason: 'close', docRef: docA }, ['evora:save', 'evora:ack'], 15000);
+  if (!r4.reply || r4.reply.type !== 'evora:ack' || r4.reply.payload.ok !== true || r4.reply.payload.code !== 'clean') {
+    errors.push(`[ehp-sack] evora:request-save d'une photo enregistrée : evora:ack {ok: true, code: "clean"} attendu : ${show(r4.reply)}`);
+  }
+
+  // 4. Deuxième photo : son propre docRef, réglages rendus par le sidecar XMP de l'enveloppe S3
+  const openB = await call('open', PHOTO2, '#F9FAFB', '#0EA5E9');
+  if (!openB.ack || openB.ack.ok !== true || !openB.transferred) errors.push(`[ehp-multi] deuxième photo non ouverte : ${show(openB)}`);
+  const docB = openB.docRef;
+  const activeB = await call('wait', openB.at, 'evora:active', { docRef: docB }, 8000);
+  if (!activeB) errors.push('[ehp-multi] pas d\'evora:active pour la deuxième photo');
+  const all1 = await docs();
+  const dB = all1.find((d) => d.docRef === docB);
+  if (all1.length !== 2 || !dB || dB.photo === photoA) errors.push(`[ehp-multi] deux photos, deux docRef et deux photos du moteur attendus : ${show(all1)}`);
+  const xmp = s3 && s3.envelope ? s3.envelope.xmp : null;
+  const applyX = await cmd('revela.apply', { docRef: docB, xmp: xmp || '' });
+  note('applyXmp', applyX && applyX.payload);
+  const getB = await cmd('develop.get', { docRef: docB });
+  if (!applyX || applyX.payload.ok !== true || !getB || Math.abs((((getB.payload.result || {}).light || {}).exposure ?? NaN) - 1.5) > 1e-6) {
+    errors.push(`[ehp-apply] revela.apply {xmp} : les réglages de l'enveloppe S3 (exposition 1.5) ne sont pas rendus : ${show({ apply: applyX && applyX.payload, get: getB && getB.payload }).slice(0, 300)}`);
+  }
+  const getA2 = await cmd('develop.get', { docRef: docA });
+  if (!getA2 || Math.abs((((getA2.payload.result || {}).light || {}).exposure ?? NaN) - 1.5) > 1e-6) errors.push('[ehp-multi] la première photo a perdu ses réglages');
+
+  // 5. Modifié par photo ; « tout enregistrer » (sans docRef) n'envoie que la photo modifiée
+  at = await call('mark');
+  await engine('develop.set', { control: 'light.exposure', value: -0.5 });
+  const dBt = await call('wait', at, 'evora:dirty', { docRef: docB, dirty: true }, 8000);
+  await pause(600);
+  if (!dBt || dirtyMsgs(await call('since', at), docA).length) errors.push('[ehp-dirty] la modification de la deuxième photo doit être annoncée pour elle seule');
+  const r5 = await call('req', 'evora:request-save', { reason: 'autosave' }, ['evora:save', 'evora:ack'], 15000);
+  await pause(1500);
+  const saves5 = (await call('since', r5.at)).filter((m) => m.type === 'evora:save');
+  if (!r5.reply || r5.reply.type !== 'evora:save' || r5.reply.payload.docRef !== docB || saves5.length !== 1) {
+    errors.push(`[ehp-multi] evora:request-save sans docRef : un seul evora:save attendu, celui de la photo modifiée (re posé) : ${show(saves5.map((m) => ({ docRef: m.payload.docRef, re: m.re })))}`);
+  }
+  if (r5.reply && r5.reply.type === 'evora:save') {
+    judgeEnvelope(r5.reply.envelope, -0.5, version, errors, 'S5');
+    await call('answer', 'evora:saved', r5.reply.id, { ok: true, version: 2 });
+    if (!(await call('wait', r5.at, 'evora:dirty', { docRef: docB, dirty: false }, 8000))) errors.push('[ehp-sack] la deuxième photo enregistrée doit redevenir propre');
+  }
+
+  // 6. evora:activate : la photo vient devant ; inconnue : not_found
+  const act = await call('req', 'evora:activate', { docRef: docA }, ['evora:ack'], 15000);
+  const activeA = await call('wait', act.at, 'evora:active', { docRef: docA }, 8000);
+  const sAct = await engineStats();
+  if (!act.reply || act.reply.payload.ok !== true || !activeA || sAct.active !== PHOTO) {
+    errors.push(`[ehp-multi] evora:activate : accusé, evora:active et photo devant attendus : ${show({ ack: act.reply && act.reply.payload, active: sAct.active })}`);
+  }
+  const ghost = await call('req', 'evora:activate', { docRef: await evalPage('window.__ehp.ulid()') }, ['evora:ack'], 15000);
+  if (!ghost.reply || ghost.reply.payload.ok !== false || ghost.reply.payload.code !== 'not_found') errors.push(`[ehp-multi] evora:activate d'un docRef inconnu : not_found attendu : ${show(ghost.reply)}`);
+
+  // 7. Liste blanche des commandes : refus à réception, paramètres jugés
+  const photosBefore = (await engineStats()).photos;
+  for (const [command, params] of [['library.import', { paths: ['/etc/passwd'] }], ['photo.delete', {}], ['web.purgeStorage', {}], ['file.backupLibrary', {}]]) {
+    const r = await cmd(command, params);
+    if (!r || r.payload.ok !== false || r.payload.code !== 'capability') errors.push(`[ehp-command] commande hors liste ${command} : evora:ack {ok: false, code: "capability"} attendu : ${show(r && r.payload)}`);
+  }
+  if ((await engineStats()).photos !== photosBefore) errors.push('[ehp-command] une commande hors liste a changé la photothèque');
+  const both = await cmd('revela.apply', { docRef: docA, settings: {}, xmp: 'x' });
+  if (!both || both.payload.ok !== false || both.payload.code !== 'invalid_content') errors.push(`[ehp-command] revela.apply avec settings ET xmp : invalid_content attendu : ${show(both && both.payload)}`);
+  const lost = await cmd('develop.get', { docRef: await evalPage('window.__ehp.ulid()') });
+  if (!lost || lost.payload.ok !== false || lost.payload.code !== 'not_found') errors.push(`[ehp-command] develop.get d'un docRef inconnu : not_found attendu : ${show(lost && lost.payload)}`);
+  const controls = await cmd('develop.controls', { section: 'light' });
+  if (!controls || controls.payload.ok !== true || !Array.isArray(controls.payload.result)) errors.push(`[ehp-command] develop.controls {section} : liste attendue : ${show(controls && controls.payload).slice(0, 200)}`);
+
+  // 8. Export de deux photos : deux evora:export, chacun du docRef de sa photo ; aucun téléchargement
+  at = await call('mark');
+  const dl0 = await downloads();
+  const ex = await engine('app.export', { ids: [photoA, dB ? dB.photo : null].filter((x) => x !== null), dir: 'evora' });
+  const exports = [];
+  for (let i = 0; i < 40 && exports.length < 2; i += 1) {
+    await pause(500);
+    exports.splice(0, exports.length, ...(await call('since', at)).filter((m) => m.type === 'evora:export'));
+  }
+  for (const m of exports) await call('answer', 'evora:ack', m.id, { ok: true });
+  note('exports', exports.map((m) => ({ docRef: m.payload.docRef, name: m.payload.name, mime: m.payload.mime, magic: m.magic })));
+  const want = { [docA]: 'evora-smoke', [docB]: 'seconde-photo' };
+  const exportOk = exports.length === 2 && exports.every((m) => want[m.payload.docRef] && m.payload.name.toLowerCase().startsWith(want[m.payload.docRef]))
+    && new Set(exports.map((m) => m.payload.docRef)).size === 2;
+  if (!ex.ok || !exportOk) errors.push(`[ehp-export-docref] export de deux photos : un evora:export par photo, du docRef de sa photo : ${show({ export: ex, got: exports.map((m) => [m.payload.docRef, m.payload.name]) })}`);
+  if (exports.some((m) => m.payload.mime !== 'image/jpeg' || m.magic !== 'ffd8ff')) errors.push(`[ehp-export-docref] fichier exporté inattendu (JPEG attendu) : ${show(exports.map((m) => [m.payload.mime, m.magic]))}`);
+  const dl1 = await downloads();
+  if (dl1.anchors.length !== dl0.anchors.length || dl1.events !== dl0.events) errors.push(`[ehp-download] l'export a lancé un téléchargement (jamais sous le pont) : ${show(dl1)}`);
+
+  // 9. Sélecteur d'Evora : evora:pick {purpose: "open"}, la coquille répond par une photo neuve
+  at = await call('mark');
+  await engine('file.addPhotos', {});
+  const pick = await call('wait', at, 'evora:pick', {}, 8000);
+  const accept = pick && Array.isArray(pick.payload.accept) ? pick.payload.accept : [];
+  if (!pick || pick.payload.purpose !== 'open' || pick.payload.multiple !== true || !accept.includes('.jpg') || !accept.includes('.dng') || accept.length > 32
+    || accept.some((a) => !/^\.[a-z0-9]+$/.test(a)) || Object.keys(pick.payload).some((k) => !['purpose', 'accept', 'multiple'].includes(k))) {
+    errors.push(`[ehp-pick] Fichier › Ajouter des photos : evora:pick {purpose: "open", accept, multiple: true} attendu : ${show(pick && pick.payload)}`);
+  }
+  let docC = null;
+  if (pick) {
+    const served = await call('servePick', pick.id, PHOTO3);
+    docC = served.docRef;
+    const cDoc = await docOf(docC);
+    const sC = await engineStats();
+    if (!served.ack || served.ack.ok !== true || !cDoc || sC.active !== PHOTO3) errors.push(`[ehp-pick] la photo choisie dans Evora n'est pas ouverte devant : ${show({ ack: served.ack, active: sC.active })}`);
+  }
+
+  // 10. Clavier : F6 rend la main à la coquille (evora:focus-out), Ctrl+S enregistre la photo devant
+  at = await call('mark');
+  const key = (init) => engineEval(`(() => { const c = document.getElementById('lightcraft_canvas') || document.body; const e = new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, ${JSON.stringify(init)})); c.dispatchEvent(e); c.dispatchEvent(new KeyboardEvent('keyup', Object.assign({ bubbles: true, cancelable: true }, ${JSON.stringify(init)}))); return String(e.defaultPrevented); })()`, 20000);
+  const f6 = await key({ key: 'F6', code: 'F6' });
+  const out = await call('wait', at, 'evora:focus-out', {}, 5000);
+  if (!out || f6 !== 'true') errors.push(`[ehp-focus-out] F6 dans le moteur : evora:focus-out attendu et la touche retenue (defaultPrevented ${f6})`);
+  if (docC) {
+    at = await call('mark');
+    await engine('develop.set', { control: 'light.exposure', value: 0.3 });
+    await call('wait', at, 'evora:dirty', { docRef: docC, dirty: true }, 8000);
+    const ctrlS = await key({ key: 's', code: 'KeyS', ctrlKey: true });
+    const keySave = await call('wait', at, 'evora:save', { docRef: docC }, 8000);
+    if (!keySave || keySave.re !== null || ctrlS !== 'true') errors.push(`[ehp-save-key] Ctrl+S : evora:save (sans re) de la photo devant attendu : ${show(keySave && { re: keySave.re, payload: keySave.payload })}`);
+    else {
+      judgeEnvelope(keySave.envelope, 0.3, version, errors, 'Ctrl+S');
+      await call('answer', 'evora:saved', keySave.id, { ok: true, version: 2 });
+      await call('wait', at, 'evora:dirty', { docRef: docC, dirty: false }, 8000);
+    }
+  }
+  const dl2 = await downloads();
+  result.downloads = dl2;
+  if (dl2.anchors.length || dl2.events) errors.push(`[ehp-download] téléchargement pendant la séance (jamais sous le pont) : ${show(dl2)}`);
 }
 
 // Scénario « pont-muet » : evora-host.json de l'artefact (vide) ; aucun message, jamais.

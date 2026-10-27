@@ -31,6 +31,11 @@
 // --ehp-witness rejoue ce banc contre des moteurs factices, un conforme (doit être vert) et un par
 // défaut (chacun doit rougir avec son étiquette), puis contre le vrai moteur sabordé (effacements
 // sans effet dans sa page : doit rougir par chaque détecteur de purge).
+// EVORA-REV-29 : « pont-ehp » exerce aussi le pont d'enregistrement de Revela (documents de la
+// coquille, enveloppe revela-save, accusé d'enregistrement, revela.apply par réglages et par XMP,
+// liste blanche de commandes, export de deux photos vers Drive, sélecteur d'Evora, F6 et Ctrl+S) ;
+// tout téléchargement y est rouge (sentinelle chargée avant les scripts du moteur, et événements
+// Browser.downloadWillBegin de Chrome).
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
@@ -39,7 +44,7 @@ import { join, extname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { auditRust, isEmoji, isSymbol, loadOverrides, SENSITIVE_TERMS, INFO_TERMS } from './catalog-audit.mjs';
 import {
-  FOREIGN_HTML, FOREIGN_JS, HARNESS_JS, OBSERVER_HTML, OBSERVER_JS, OTHER_NS, REAL_WITNESS, SABOTAGE_JS, WITNESS_FLAWS, WITNESS_HTML, WITNESS_JS,
+  FOREIGN_HTML, FOREIGN_JS, HARNESS_JS, OBSERVER_HTML, OBSERVER_JS, OTHER_NS, REAL_WITNESS, SABOTAGE_JS, SENTINEL_JS, WITNESS_FLAWS, WITNESS_HTML, WITNESS_JS,
   parentPage, runEhp, runMute,
 } from './ehp-bench.mjs';
 
@@ -204,17 +209,19 @@ async function scenario(opts, chrome, sc, cspHashes) {
       const body = shippedHostConfig();
       return body ? { type: 'application/json', body } : null;
     }
-    const assets = { '/__evora/observer.html': [HTML, OBSERVER_HTML], '/__evora/observer.js': [JS, OBSERVER_JS] };
+    const assets = { '/__evora/observer.html': [HTML, OBSERVER_HTML], '/__evora/observer.js': [JS, OBSERVER_JS], '/__evora/sentinel.js': [JS, SENTINEL_JS] };
     if (sc.witness) Object.assign(assets, { '/__evora/witness/index.html': [HTML, WITNESS_HTML], '/__evora/witness/witness.js': [JS, WITNESS_JS] });
-    // témoin sabordé du vrai moteur : sabotage.js chargé avant tout autre script de son index.html
-    if (sc.sabotage) {
-      assets['/__evora/sabotage.js'] = [JS, SABOTAGE_JS];
+    // vrai moteur : la sentinelle des téléchargements (EVORA-REV-29), puis, pour le témoin sabordé,
+    // sabotage.js, chargés avant tout autre script de son index.html
+    if (!sc.witness) {
+      if (sc.sabotage) assets['/__evora/sabotage.js'] = [JS, SABOTAGE_JS];
       try {
         const index = readFileSync(join(opts.site, 'index.html'), 'utf8');
         if (!index.includes('<head>')) throw new Error('<head> absent');
-        assets['/index.html'] = [HTML, index.replace('<head>', '<head>\n  <script src="__evora/sabotage.js"></script>')];
+        const pre = `<script src="__evora/sentinel.js"></script>${sc.sabotage ? '\n  <script src="__evora/sabotage.js"></script>' : ''}`;
+        assets['/index.html'] = [HTML, index.replace('<head>', `<head>\n  ${pre}`)];
       } catch (err) {
-        errors.push(`[ehp-bench] index.html du moteur illisible pour le sabotage : ${err.message}`);
+        errors.push(`[ehp-bench] index.html du moteur illisible pour la sentinelle${sc.sabotage ? ' et le sabotage' : ''} : ${err.message}`);
       }
     }
     return assets[path] ? { type: assets[path][0], body: assets[path][1] } : null;
@@ -258,6 +265,7 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   const errors = [];
   const warnings = [];
   const appLog = [];
+  const downloadEvents = [];
   const targets = new Map(); // sessionId -> { type, url }
   let frameSession = null;
   const frames = []; // sessions des cadres hors processus (moteur, observateur, page étrangère)
@@ -293,6 +301,9 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
       if (e.level === 'error') errors.push(line); else if (e.level === 'warning') warnings.push(line);
     } else if (method === 'Inspector.targetCrashed' || method === 'Target.targetCrashed') {
       errors.push(`[${label(sessionId)}] plantage de la cible`);
+    } else if (method === 'Browser.downloadWillBegin' || method === 'Page.downloadWillBegin') {
+      // EVORA-REV-29 : tout téléchargement est relevé (le banc du pont exige 0)
+      downloadEvents.push(params.suggestedFilename || params.url || '?');
     }
   });
 
@@ -301,6 +312,13 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
   try {
     const version = await withTimeout(cdp.send('Browser.getVersion'), 20000, 'Browser.getVersion');
     result.browser = version.product;
+    if (sc.ehp) {
+      try {
+        await withTimeout(cdp.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true }), 10000, 'Browser.setDownloadBehavior');
+      } catch (err) {
+        warnings.push(`Browser.setDownloadBehavior indisponible (la sentinelle reste) : ${err.message}`);
+      }
+    }
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId: page } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
     targets.set(page, { type: 'page', url: 'about:blank' });
@@ -372,7 +390,10 @@ allow="fullscreen; clipboard-read; clipboard-write" title="moteur"></iframe></bo
           if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
           return r.result.value;
         };
-        const ctx = { errors, result, evalPage: (e) => evalIn(page, e), engineStats: async () => JSON.parse(await evalIn(frameSession, "globalThis.lightcraft.command('web.stats', '{}')", 20000)) };
+        const ctx = { errors, result, evalPage: (e) => evalIn(page, e), engineStats: async () => JSON.parse(await evalIn(frameSession, "globalThis.lightcraft.command('web.stats', '{}')", 20000)),
+          // EVORA-REV-29 : commandes et événements dans le cadre du moteur ; téléchargements relevés
+          engineEval: (e, ms) => evalIn(frameSession, e, ms),
+          downloads: async () => ({ anchors: JSON.parse(await evalIn(frameSession, 'JSON.stringify(globalThis.__evoraDownloads || [])', 20000)), events: downloadEvents.length }) };
         try {
           if (sc.ehp === 'admit') await runEhp(ctx);
           else await runMute({ ...ctx, site: opts.site, readFileSync, join });

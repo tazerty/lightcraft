@@ -25,6 +25,13 @@
 # exécution contre des moteurs factices (.github/evora/ehp-bench.mjs) et contre le vrai moteur sabordé
 # (effacements sans effet dans sa page) : le conforme doit rester vert et chaque défaut doit rougir
 # avec son étiquette, sinon le job est rouge.
+#
+# Pont d'enregistrement de Revela (EVORA-REV-29, banc EVORA-REV-30) : « pont-ehp » exerce aussi les
+# documents de la coquille (un docRef par photo, evora:dirty, evora:active, evora:activate), la
+# machine d'enregistrement (enveloppe revela-save, evora:saved refusé, photo changée pendant l'envoi,
+# « clean »), revela.apply par réglages et par sidecar XMP, la liste blanche des commandes, l'export
+# de deux photos vers Drive (docRef de chaque fichier, aucun téléchargement), le sélecteur d'Evora,
+# F6 (evora:focus-out) et Ctrl+S ; dix moteurs factices de plus portent chacun un de ces défauts.
 name: Evora web
 
 on:
