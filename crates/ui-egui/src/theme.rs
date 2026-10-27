@@ -195,6 +195,8 @@ fn evora_tokens(dark: bool) -> Tokens {
             grid_bg: rgb(0x030712),
             cell: rgb(0x111827),
             cell_selected: rgb(0x1f2937),
+            // v0.14.0: a thumbnail's place while it is made, apart from the grid and the cells
+            skeleton: rgb(0x374151),
             divider: rgb(0x030712),
             inset: rgb(0x030712),
             field: rgb(0x1f2937),
@@ -226,6 +228,7 @@ fn evora_tokens(dark: bool) -> Tokens {
             grid_bg: rgb(0xf9fafb),
             cell: rgb(0xf3f4f6),
             cell_selected: rgb(0xe5e7eb),
+            skeleton: rgb(0xd1d5db),
             divider: rgb(0xe5e7eb),
             inset: rgb(0xf9fafb),
             field: rgb(0xffffff),

@@ -124,9 +124,10 @@ impl Options {
 
 /// Evora (E3): the UI language for the host's language tag. A language this build ships is used
 /// (`zh-Hans` and `zh-CN` give 简体中文, `fr` gives Français…). Bare `pt` (and any Portuguese other
-/// than an explicit `pt-BR`) is not mapped to a variant while D-23 is open; it shows English, like
-/// every language without a catalog here (ar, hi, id, ko, tr): the host's shell says so. Italian
-/// (`it`) has its catalog upstream since v0.9.1 and is used as is.
+/// than an explicit `pt-BR`) is not mapped to a variant here: Evora's `pt` is Brazilian Portuguese
+/// (D-23), and the host sends `engineLang` `pt-br` once its locale table says so. Every language
+/// without a catalog here (ar, hi, ko, tr) shows English: the host's shell says so. Italian (`it`,
+/// since v0.9.1) and Indonesian (`id`, since v0.14.0) have their catalogs upstream and are used as is.
 fn host_language(tag: &str) -> lightcraft_ui_egui::i18n::Locale {
     use lightcraft_ui_egui::i18n::Locale;
     let tag = tag.trim().replace('_', "-").to_ascii_lowercase();
@@ -750,9 +751,10 @@ impl WebApp {
     /// photo the host sends as bytes, kept in memory only, and make it the active photo. Returns
     /// its id, or the EHP code and the reason it wasn't opened.
     fn open_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<u64, (&'static str, String)> {
+        // v0.14.0: the accept list is derived from the engine's import extensions (`accept_list`)
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-        if ext.is_empty() || !ACCEPT.split(',').any(|a| a.trim_start_matches('.') == ext) {
-            return Err(("unsupported", format!("not a format this engine opens ({ACCEPT})")));
+        if ext.is_empty() || !accept_list().split(',').any(|a| a.trim_start_matches('.') == ext) {
+            return Err(("unsupported", format!("not a format this engine opens ({})", accept_list())));
         }
         let hash = content_hash(&bytes);
         let path = original_path(&hash, name);
