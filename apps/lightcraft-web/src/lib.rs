@@ -16,7 +16,8 @@
 //!
 //! Evora: `?host=evora` makes the page the engine of Evora's Revela (memory mode, the Evora host
 //! protocol with the parent page `evora-host.json` admits, purges asked by the host only; see
-//! `ehp`, `purge` and [`storage_names`]).
+//! `ehp`, `purge` and [`storage_names`]); the host's documents, saves, commands, exports and
+//! picker are `host_docs`, its keys `host_keys` (EVORA-REV-29).
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -32,6 +33,10 @@ pub mod wire;
 mod backend;
 #[cfg(target_arch = "wasm32")]
 mod ehp;
+#[cfg(target_arch = "wasm32")]
+mod host_docs;
+#[cfg(target_arch = "wasm32")]
+mod host_keys;
 #[cfg(target_arch = "wasm32")]
 mod purge;
 #[cfg(target_arch = "wasm32")]

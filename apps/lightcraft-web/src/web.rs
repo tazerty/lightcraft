@@ -6,6 +6,9 @@
 //! browser storage (memory mode, whatever `?store=` says; no `?reset`), speaks the Evora host
 //! protocol with the parent page `evora-host.json` admits ([`crate::ehp`]), opens the photos the
 //! host sends as bytes, and purges browser storage only when the host asks ([`crate::purge`]).
+//! EVORA-REV-29: each of those photos is one of the host's documents ([`crate::host_docs`]: saves,
+//! commands, exports to Evora's Drive, Evora's picker); no demo photos, no `?bench`, no library
+//! backup or restore, and no download.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -111,7 +114,8 @@ impl Options {
             store = "memory".into();
         }
         Options {
-            bench: get("bench").is_some(),
+            // Evora (EVORA-REV-29): no scripted measurement under the host
+            bench: !host && get("bench").is_some(),
             store,
             workers: get("workers").and_then(|v| v.parse().ok()),
             reset: !host && get("reset").is_some(),
@@ -206,10 +210,10 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen: Rc<Cell<bool>>, ctx: egui::Context) -> Services {
+fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen: Rc<Cell<bool>>, ctx: egui::Context, host: bool) -> Services {
     let (backup_backend, backup_files) = (backend.clone(), files);
     let restore_backend = backend.clone();
-    Services {
+    let services = Services {
         picker: None,
         pick_display_profile: None,
         screen_profile: None,
@@ -285,7 +289,19 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         pick_folder: None,
         // the browser reports prefers-color-scheme to egui
         system_theme: None,
-    }
+    };
+    if host { host_services(services) } else { services }
+}
+
+/// Evora (EVORA-REV-29): the host's services. Files the engine writes go to Evora's Drive
+/// (`evora:export`), never to a download; its file picker is Evora's (`evora:pick`); nothing is
+/// kept in this browser, so there is no library to back up or restore.
+fn host_services(mut services: Services) -> Services {
+    services.backup_library = None;
+    services.restore_library = None;
+    services.pick_files = Some(Box::new(crate::host_docs::pick_files));
+    services.write = Some(Box::new(crate::host_docs::export_write));
+    services
 }
 
 /// Write dirty library files to storage, in order, until none are left. A failure (quota,
@@ -451,6 +467,9 @@ struct WebApp {
     title: String,
     last_save: f64,
     ui_written: Vec<u8>,
+    /// Evora (EVORA-REV-29): under the host, its documents ([`crate::host_docs`]).
+    host: bool,
+    docs: crate::host_docs::HostDocs,
 }
 
 impl WebApp {
@@ -471,7 +490,8 @@ impl WebApp {
         let read_failed = load_error.is_some();
         let opened = match load_error {
             Some(e) => Err(format!("{e}. Nothing was changed in storage")),
-            None => session.open_library_in(stores, true).cloned().map_err(|e| e.to_string()),
+            // Evora (EVORA-REV-29): no demo photos under the host, only the photos it opens
+            None => session.open_library_in(stores, !opts.host).cloned().map_err(|e| e.to_string()),
         };
         match opened {
             Ok(r) => log::info!(
@@ -506,7 +526,7 @@ impl WebApp {
         session.media.preview_capacity = 3;
         // nothing is saved while the stored library couldn't be read
         let frozen = Rc::new(Cell::new(read_failed));
-        let mut app = LightcraftApp::new(session, services(originals.clone(), backend.clone(), files.clone(), frozen.clone(), cc.egui_ctx.clone()))
+        let mut app = LightcraftApp::new(session, services(originals.clone(), backend.clone(), files.clone(), frozen.clone(), cc.egui_ctx.clone(), opts.host))
             .with_chinese_font(chinese_font);
         let ui_written = files.get("ui.json").unwrap_or_default();
         if let Ok(ui) = serde_json::from_slice::<UiState>(&ui_written) {
@@ -570,6 +590,8 @@ impl WebApp {
             title: String::new(),
             last_save: 0.0,
             ui_written,
+            host: opts.host,
+            docs: crate::host_docs::HostDocs::default(),
         }
     }
 
@@ -721,14 +743,22 @@ impl WebApp {
                 }
                 HostEvent::Open { id, doc_ref, name, bytes } => match self.open_bytes(&name, bytes) {
                     Ok(photo) => {
-                        log::info!("lightcraft: {name} opened from the host (docRef {doc_ref}, photo {photo})");
+                        // EVORA-REV-29: the photo is the host's document `doc_ref`
+                        let photo = self.docs.bind(&mut self.app, &doc_ref, PhotoId(photo));
+                        log::info!("lightcraft: {name} opened from the host (docRef {doc_ref}, photo {})", photo.0);
                         ack(&id, true, None);
+                        self.docs.opened(&doc_ref);
                     }
                     Err((code, e)) => {
                         log::warn!("lightcraft: {name} from the host was not opened: {e}");
                         ack(&id, false, Some(code));
                     }
                 },
+                HostEvent::RequestSave { id, doc_ref } => self.docs.request_save(&self.app, &id, doc_ref.as_deref()),
+                HostEvent::Saved { re, ok, doc_ref } => self.docs.saved(&self.app, &re, ok, doc_ref),
+                HostEvent::Command { id, command, params } => self.docs.command(&mut self.app, &id, &command, &params),
+                HostEvent::Activate { id, doc_ref } => self.docs.activate(&mut self.app, &id, &doc_ref),
+                HostEvent::SaveShortcut => self.docs.save_shown(&self.app),
             }
         }
     }
@@ -776,7 +806,18 @@ impl WebApp {
         let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
         let (orig_n, orig_bytes) = self.originals.usage();
         let active = self.app.session.selection.active;
+        // Evora (EVORA-REV-29): the host's documents, and what the host build keeps neutral
+        let host = self.host.then(|| {
+            let mut v = self.docs.stats(&self.app);
+            v["neutral"] = json!({
+                "bench": self.bench.is_some(),
+                "backup": self.app.services.backup_library.is_some(),
+                "restore": self.app.services.restore_library.is_some(),
+            });
+            v
+        });
         json!({
+            "host": host,
             "language": self.app.ui.language,
             "theme": {
                 "evora": lightcraft_ui_egui::theme::evora_palette(),
@@ -895,6 +936,9 @@ impl eframe::App for WebApp {
         }
         self.run_inbox(ctx);
         self.host_requests(ctx);
+        if self.host {
+            self.docs.check(&mut self.app, ctx);
+        }
         self.import_dropped(ctx);
         self.load_originals(ctx);
         if let Some(w) = &self.workers {

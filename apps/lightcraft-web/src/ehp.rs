@@ -21,9 +21,18 @@
 //! bytes, imported in memory and made the active photo; answered once imported), `evora:lang`,
 //! `evora:theme`, `evora:purge` (answered once the storage is actually empty, [`crate::purge`]).
 //! Sent: `evora:ready`, `evora:ack`, `evora:failed {code}` when the engine can't start or stops.
-//! Not yet (Revela's target, HOST-PROTOCOL.md §9.2): `doc.save` and `doc.request-save` (what
-//! `evora:save` carries is Revela's open question Q-REV-18), `doc.saved-ack`, `doc.dirty`,
-//! `doc.multi`, `export.drive` (REV-02), `pick.drive`, `command` (REV-06).
+//!
+//! Evora (EVORA-REV-29, Revela's save bridge; Revela's CdC §5, HOST-PROTOCOL §4, §6, §7.2 to §7.6,
+//! §7.9 and §7.10): each photo the host opens is one of its documents (`docRef`, `doc.multi`).
+//! Handled as well: `evora:request-save` (answered by an `evora:save` per modified photo, whose
+//! bytes are the `revela-save` envelope, or `evora:ack {code: "clean"}`), `evora:saved` (the photo
+//! is saved only on `ok: true`, and only if it hasn't changed since: `doc.saved-ack`),
+//! `evora:command` (the compiled list of [`crate::host_docs::COMMANDS`] only, any other refused
+//! with `capability`), `evora:activate`, and the host's `evora:ack` of the engine's own requests.
+//! Sent as well: `evora:dirty {dirty, docRef}`, `evora:save`, `evora:active`, `evora:closed`,
+//! `evora:export` (every file the engine writes goes to Evora's Drive, never to a download),
+//! `evora:pick {purpose: "open"}` (the engine's file picker is the host's), `evora:focus-out`
+//! (F6, [`crate::host_keys`]). What each document holds is [`crate::host_docs`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
@@ -41,11 +50,28 @@ const EHP: &str = "1.0";
 /// What this engine honours (§9.1), each exercised by the CI smoke scenario « pont-ehp ».
 /// `storage.memory`: under the host the engine keeps nothing in browser storage. `storage.ns` is
 /// not declared: with nothing stored there is nothing to put in a namespace (Revela's CdC §5.1).
-pub const CAPABILITIES: [&str; 5] = ["doc.open", "storage.memory", "storage.purge", "live.lang", "live.theme"];
+/// EVORA-REV-29: the save bridge (`doc.*`, `command`), exports and picker (`export.drive`,
+/// `pick.drive`) and the way out at the keyboard (`ui.focus-out`, A-19).
+pub const CAPABILITIES: [&str; 14] = [
+    "doc.open",
+    "doc.save",
+    "doc.saved-ack",
+    "doc.dirty",
+    "doc.multi",
+    "doc.request-save",
+    "export.drive",
+    "pick.drive",
+    "command",
+    "storage.memory",
+    "storage.purge",
+    "live.lang",
+    "live.theme",
+    "ui.focus-out",
+];
 /// The admitted parent origins, next to `index.html` (§2.3).
 const CONFIG: &str = "evora-host.json";
 const LANGS: [&str; 14] = ["ar", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko", "pt", "ru", "tr", "zh-Hans"];
-const CAPABILITY_NAMES: [&str; 18] = [
+const CAPABILITY_NAMES: [&str; 19] = [
     "doc.open",
     "doc.save",
     "doc.saved-ack",
@@ -64,9 +90,19 @@ const CAPABILITY_NAMES: [&str; 18] = [
     "live.theme",
     "font.inject",
     "author",
+    "ui.focus-out",
 ];
 /// Message ids remembered against replays (then forgotten, oldest first).
 const MAX_SEEN: usize = 4096;
+/// The engine's own requests still waiting for the host's answer (saves, exports, picks), at most.
+const MAX_PENDING: usize = 256;
+/// `{EHP_MAX_ACCEPT_ITEMS}`: the host's default (`creative_ehp_max_accept_items`, to arbitrate).
+const MAX_ACCEPT_ITEMS: usize = 32;
+/// `ackCode` of §4.2: what the host may answer in `evora:saved.error` or `evora:ack.code`.
+const ACK_CODES: [&str; 16] = [
+    "clean", "cancelled", "conflict", "too_large", "quota", "forbidden", "not_found", "invalid_content", "unsupported", "rate_limited",
+    "read_only", "busy", "capability", "network", "server", "timeout",
+];
 
 /// What the host asks of the app, applied on its next frame (`web::WebApp`), which answers it.
 pub enum HostEvent {
@@ -77,6 +113,17 @@ pub enum HostEvent {
     Open { id: String, doc_ref: String, name: String, bytes: Vec<u8> },
     Lang { id: String, lang: Option<String> },
     Theme { id: String, dark: bool },
+    /// `evora:request-save` (§4.3): one photo, or every modified one (`None`).
+    RequestSave { id: String, doc_ref: Option<String> },
+    /// `evora:saved` answering the engine's `evora:save` `re`; `doc_ref`: the new document a copy
+    /// made (§7.3).
+    Saved { re: String, ok: bool, doc_ref: Option<String> },
+    /// `evora:command` of the compiled list ([`crate::host_docs::COMMANDS`]).
+    Command { id: String, command: String, params: serde_json::Value },
+    /// `evora:activate` (§7.10): show this document.
+    Activate { id: String, doc_ref: String },
+    /// Ctrl+S or Cmd+S in the engine ([`crate::host_keys`]): save the photo shown.
+    SaveShortcut,
 }
 
 struct Link {
@@ -91,9 +138,14 @@ struct Link {
     /// The effective capabilities: what the host offers in `evora:init` and this engine declares.
     caps: Vec<String>,
     max_document: f64,
+    max_export: f64,
     storage_ns: String,
     seen: VecDeque<String>,
     seen_set: HashSet<String>,
+    /// The engine's `evora:save` ids waiting for their `evora:saved`.
+    saves: VecDeque<String>,
+    /// The engine's `evora:export` and `evora:pick` ids waiting for the host's `evora:ack`.
+    asks: VecDeque<String>,
 }
 
 thread_local! {
@@ -112,6 +164,11 @@ pub fn next_event() -> Option<HostEvent> {
 fn push(event: HostEvent) {
     EVENTS.with(|e| e.borrow_mut().push_back(event));
     crate::web::request_repaint();
+}
+
+/// Queue a request for the app's next frame from elsewhere in the bridge ([`crate::host_keys`]).
+pub fn push_event(event: HostEvent) {
+    push(event);
 }
 
 /// Read `evora-host.json`, find the admitted parent, listen, then announce `evora:ready` (before
@@ -137,11 +194,16 @@ pub fn connect() {
                 initialized: false,
                 caps: Vec::new(),
                 max_document: 0.0,
+                max_export: 0.0,
                 storage_ns: String::new(),
                 seen: VecDeque::new(),
                 seen_set: HashSet::new(),
+                saves: VecDeque::new(),
+                asks: VecDeque::new(),
             });
         });
+        // F6 (`ui.focus-out`) and Ctrl+S (`doc.save`), held back from the canvas (EVORA-REV-29)
+        crate::host_keys::listen(&window);
         // the engine already failed: say so instead of announcing it
         if let Some(code) = FAILED.with(Cell::get) {
             send_failed(code);
@@ -201,6 +263,157 @@ pub fn ack(re: &str, ok: bool, code: Option<&'static str>) {
     }
     if let Some(payload) = object(&fields) {
         let _ = send("evora:ack", Some(re), &payload);
+    }
+}
+
+/// `evora:ack {ok: true, result}` for `evora:command` `re` (§4.5): `result` goes as a JSON value.
+pub fn ack_result(re: &str, result: &serde_json::Value) {
+    let Ok(result) = js_sys::JSON::parse(&result.to_string()) else {
+        ack(re, false, Some("invalid_content"));
+        return;
+    };
+    if let Some(payload) = object(&[("ok", JsValue::from_bool(true)), ("result", result)]) {
+        let _ = send("evora:ack", Some(re), &payload);
+    }
+}
+
+/// Is capability `c` effective (offered by the host in `evora:init` and declared here)?
+pub fn has(c: &str) -> bool {
+    effective(c)
+}
+
+/// The host's `limits` of `evora:init` (`maxDocumentBytes`, `maxExportBytes`).
+fn limits() -> (f64, f64) {
+    LINK.with(|l| l.try_borrow().ok().and_then(|l| l.as_ref().map(|l| (l.max_document, l.max_export))).unwrap_or((0.0, 0.0)))
+}
+
+/// Remember an id the host must answer (oldest forgotten past [`MAX_PENDING`]).
+fn remember(list: fn(&mut Link) -> &mut VecDeque<String>, id: &str) {
+    LINK.with(|l| {
+        if let Ok(mut l) = l.try_borrow_mut()
+            && let Some(l) = l.as_mut()
+        {
+            let q = list(l);
+            if q.len() >= MAX_PENDING {
+                q.pop_front();
+            }
+            q.push_back(id.to_string());
+        }
+    });
+}
+
+/// Forget `re` if the host had to answer it; `false` if it was never asked (or answered already).
+fn answered(list: fn(&mut Link) -> &mut VecDeque<String>, re: &str) -> bool {
+    LINK.with(|l| {
+        let Ok(mut l) = l.try_borrow_mut() else { return false };
+        let Some(l) = l.as_mut() else { return false };
+        let q = list(l);
+        match q.iter().position(|id| id == re) {
+            Some(i) => {
+                q.remove(i);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
+/// A copy of `bytes` in a fresh `ArrayBuffer`, to transfer.
+fn buffer(bytes: &[u8]) -> js_sys::ArrayBuffer {
+    js_sys::Uint8Array::from(bytes).buffer()
+}
+
+/// `evora:save {docRef, name, saveAs: false, bytes}` (§4.4), `re` when it answers an
+/// `evora:request-save`. Returns its id, or the EHP code why it can't go.
+pub fn save(doc_ref: &str, name: &str, bytes: &[u8], re: Option<&str>) -> Result<String, &'static str> {
+    if !effective("doc.save") {
+        return Err("capability");
+    }
+    if bytes.is_empty() || bytes.len() as f64 > limits().0 {
+        return Err("too_large");
+    }
+    let data = buffer(bytes);
+    let payload = object(&[
+        ("docRef", JsValue::from_str(doc_ref)),
+        ("name", JsValue::from_str(name)),
+        ("saveAs", JsValue::from_bool(false)),
+        ("bytes", data.clone().into()),
+    ])
+    .ok_or("busy")?;
+    let id = send_with("evora:save", re, &payload, Some(&data)).ok_or("busy")?;
+    remember(|l| &mut l.saves, &id);
+    Ok(id)
+}
+
+/// `evora:dirty {dirty, docRef}` (§4.4, `docRef` required under `doc.multi`).
+pub fn dirty(doc_ref: &str, dirty: bool) {
+    if effective("doc.dirty")
+        && let Some(payload) = object(&[("dirty", JsValue::from_bool(dirty)), ("docRef", JsValue::from_str(doc_ref))])
+    {
+        let _ = send("evora:dirty", None, &payload);
+    }
+}
+
+/// `evora:active {docRef}` or `evora:closed {docRef}` (§7.10).
+pub fn tab(kind: &'static str, doc_ref: &str) {
+    if effective("doc.multi")
+        && let Some(payload) = object(&[("docRef", JsValue::from_str(doc_ref))])
+    {
+        let _ = send(kind, None, &payload);
+    }
+}
+
+/// `evora:export {docRef?, name, mime, bytes}` (§4.4, §7.4): the file goes to Evora's Drive,
+/// never to a download. Refused (an error the engine shows) when the host doesn't take exports.
+pub fn export(doc_ref: Option<&str>, name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
+    if !effective("export.drive") {
+        return Err("exports go to Evora's Drive, which isn't reachable from this page".into());
+    }
+    if bytes.is_empty() || bytes.len() as f64 > limits().1 {
+        return Err(format!("{name} is too large for Evora's Drive ({} bytes)", bytes.len()));
+    }
+    let data = buffer(bytes);
+    let mut fields = Vec::new();
+    if let Some(doc_ref) = doc_ref {
+        fields.push(("docRef", JsValue::from_str(doc_ref)));
+    }
+    fields.push(("name", JsValue::from_str(name)));
+    fields.push(("mime", JsValue::from_str(mime)));
+    fields.push(("bytes", data.clone().into()));
+    let payload = object(&fields).ok_or("the export couldn't be handed to Evora")?;
+    let id = send_with("evora:export", None, &payload, Some(&data)).ok_or("the export couldn't be handed to Evora")?;
+    remember(|l| &mut l.asks, &id);
+    log::info!("lightcraft: {name} ({} bytes) handed to Evora's Drive", bytes.len());
+    Ok(())
+}
+
+/// `evora:pick {purpose: "open", accept, multiple: true}` (§4.4, §7.6): the host's picker adds
+/// photos, each as an `evora:open` of a new document. `false` when the host doesn't offer it.
+pub fn pick_open(accept: &[String]) -> bool {
+    if !effective("pick.drive") || accept.is_empty() {
+        return false;
+    }
+    let list = Array::new();
+    for a in accept.iter().take(MAX_ACCEPT_ITEMS) {
+        list.push(&JsValue::from_str(a));
+    }
+    let Some(payload) = object(&[("purpose", JsValue::from_str("open")), ("accept", list.into()), ("multiple", JsValue::from_bool(true))])
+    else {
+        return false;
+    };
+    match send("evora:pick", None, &payload) {
+        Some(id) => {
+            remember(|l| &mut l.asks, &id);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `evora:focus-out {}` (A-19, §7.9): the host moves the keyboard focus to « Leave the editor ».
+pub fn focus_out() {
+    if effective("ui.focus-out") {
+        let _ = send("evora:focus-out", None, &Object::new());
     }
 }
 
@@ -282,12 +495,21 @@ fn receive(event: web_sys::MessageEvent) {
         "evora:lang" => Some("live.lang"),
         "evora:theme" => Some("live.theme"),
         "evora:purge" => Some("storage.purge"),
+        "evora:request-save" => Some("doc.request-save"),
+        "evora:saved" => Some("doc.save"),
+        "evora:command" => Some("command"),
+        "evora:activate" => Some("doc.multi"),
+        // the host's answer to one of the engine's requests: after `evora:init`, matched by `re`
+        "evora:ack" => None,
         // unknown here, or a capability this engine doesn't declare: ignored (§4.1, §10)
         _ => return,
     };
     if let Some(c) = capability
         && !effective(c)
     {
+        return;
+    }
+    if kind == "evora:ack" && !LINK.with(|l| l.borrow().as_ref().is_some_and(|l| l.initialized)) {
         return;
     }
     if !only_keys(&data, &["v", "type", "id", "re", "payload"]) {
@@ -303,8 +525,10 @@ fn receive(event: web_sys::MessageEvent) {
             None => return,
         }
     };
-    // `evora:init` answers `evora:ready`; the others are requests, which carry no `re` (§3)
-    if (kind == "evora:init") != re.is_some() {
+    // `evora:init`, `evora:saved` and `evora:ack` answer the engine; the others are requests,
+    // which carry no `re` (§3)
+    let answer = matches!(kind.as_str(), "evora:init" | "evora:saved" | "evora:ack");
+    if answer != re.is_some() {
         return;
     }
     let payload = get(&data, "payload");
@@ -317,6 +541,11 @@ fn receive(event: web_sys::MessageEvent) {
         "evora:lang" => on_lang(&id, &payload),
         "evora:theme" => on_theme(&id, &payload),
         "evora:purge" => on_purge(&id, &payload),
+        "evora:request-save" => on_request_save(&id, &payload),
+        "evora:saved" => on_saved(re.as_deref().unwrap_or_default(), &payload),
+        "evora:command" => on_command(&id, &payload),
+        "evora:activate" => on_activate(&id, &payload),
+        "evora:ack" => on_answer(re.as_deref().unwrap_or_default(), &payload),
         _ => {}
     }
 }
@@ -375,7 +604,7 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
     let limits_ok = plain_object(&limits)
         && only_keys(&limits, &["maxDocumentBytes", "maxExportBytes"])
         && [max_document, max_export].iter().all(|m| m.is_some_and(|m| m >= 1.0 && m.fract() == 0.0));
-    let Some(max_document) = max_document else { return };
+    let (Some(max_document), Some(max_export)) = (max_document, max_export) else { return };
     if !(lang_ok && accent_ok && read_only_ok && name_ok && caps_ok && prefs_ok && limits_ok) {
         return;
     }
@@ -387,6 +616,7 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
             l.init_received = true;
             l.caps = caps;
             l.max_document = max_document;
+            l.max_export = max_export;
             l.storage_ns = ns.clone();
         }
     });
@@ -488,6 +718,110 @@ fn on_purge(id: &str, p: &JsValue) {
     });
 }
 
+/// `evora:request-save {reason, docRef?}` (§4.3).
+fn on_request_save(id: &str, p: &JsValue) {
+    if !only_keys(p, &["reason", "docRef"]) {
+        return;
+    }
+    let reasons = ["autosave", "visibility", "close", "logout", "user"];
+    if !get(p, "reason").as_string().is_some_and(|r| reasons.contains(&r.as_str())) {
+        return;
+    }
+    let doc_ref = get(p, "docRef");
+    let doc_ref = if doc_ref.is_undefined() {
+        None
+    } else {
+        match doc_ref.as_string().filter(|r| is_ulid(r)) {
+            Some(r) => Some(r),
+            None => return,
+        }
+    };
+    push(HostEvent::RequestSave { id: id.to_string(), doc_ref });
+}
+
+/// `evora:saved {ok, version?, docRef?, error?}` (§4.3), for an `evora:save` of this engine only.
+fn on_saved(re: &str, p: &JsValue) {
+    if !only_keys(p, &["ok", "version", "docRef", "error"]) {
+        return;
+    }
+    let Some(ok) = get(p, "ok").as_bool() else { return };
+    let version = get(p, "version");
+    let error = get(p, "error");
+    let doc_ref = get(p, "docRef");
+    let valid = if ok {
+        version.as_f64().is_some_and(|v| v >= 1.0 && v.fract() == 0.0) && error.is_undefined()
+    } else {
+        error.as_string().is_some_and(|e| ACK_CODES.contains(&e.as_str())) && version.is_undefined() && doc_ref.is_undefined()
+    };
+    let doc_ref = if doc_ref.is_undefined() {
+        None
+    } else {
+        match doc_ref.as_string().filter(|r| is_ulid(r)) {
+            Some(r) => Some(r),
+            None => return,
+        }
+    };
+    // a response that answers no save of this engine is ignored (§3)
+    if !valid || !answered(|l| &mut l.saves, re) {
+        return;
+    }
+    push(HostEvent::Saved { re: re.to_string(), ok, doc_ref });
+}
+
+/// `evora:command {command, params}` (§4.3): a command off the compiled list is refused at once.
+fn on_command(id: &str, p: &JsValue) {
+    if !only_keys(p, &["command", "params"]) {
+        return;
+    }
+    let Some(command) = get(p, "command").as_string().filter(|c| is_command(c)) else { return };
+    let params = get(p, "params");
+    if !plain_object(&params) {
+        return;
+    }
+    if !crate::host_docs::COMMANDS.contains(&command.as_str()) {
+        ack(id, false, Some("capability"));
+        return;
+    }
+    let text = js_sys::JSON::stringify(&params).ok().and_then(|t| t.as_string());
+    let Some(params) = text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+        ack(id, false, Some("invalid_content"));
+        return;
+    };
+    push(HostEvent::Command { id: id.to_string(), command, params });
+}
+
+/// `evora:activate {docRef}` (§7.10).
+fn on_activate(id: &str, p: &JsValue) {
+    if !only_keys(p, &["docRef"]) {
+        return;
+    }
+    let Some(doc_ref) = get(p, "docRef").as_string().filter(|r| is_ulid(r)) else { return };
+    push(HostEvent::Activate { id: id.to_string(), doc_ref });
+}
+
+/// The host's `evora:ack` of an `evora:export` or an `evora:pick` of this engine (§4.5); anything
+/// else is ignored. A refusal is logged: the host words what it tells the member.
+fn on_answer(re: &str, p: &JsValue) {
+    if !only_keys(p, &["ok", "code", "result"]) {
+        return;
+    }
+    let Some(ok) = get(p, "ok").as_bool() else { return };
+    if !answered(|l| &mut l.asks, re) {
+        return;
+    }
+    if !ok {
+        log::warn!("lightcraft: Evora refused a request ({})", get(p, "code").as_string().unwrap_or_default());
+    }
+}
+
+/// `command` of §4.3: `^[a-z][A-Za-z0-9_.-]*$`, at most 100 characters.
+fn is_command(c: &str) -> bool {
+    let mut chars = c.chars();
+    c.len() <= 100
+        && chars.next().is_some_and(|f| f.is_ascii_lowercase())
+        && chars.all(|x| x.is_ascii_alphanumeric() || matches!(x, '_' | '.' | '-'))
+}
+
 /// `engineLang` of §4.2: `null` (the engine shows English, the host its banner) or a language tag.
 fn engine_lang(v: &JsValue) -> Option<Option<String>> {
     if v.is_null() { Some(None) } else { v.as_string().filter(|l| is_lang_tag(l)).map(Some) }
@@ -509,11 +843,20 @@ fn is_accent(v: &JsValue) -> bool {
 
 /// Post a message to the admitted parent origin; returns its `id`.
 fn send(kind: &str, re: Option<&str>, payload: &Object) -> Option<String> {
+    send_with(kind, re, payload, None)
+}
+
+/// [`send`], transferring `data` (the message's `bytes`) instead of copying it.
+fn send_with(kind: &str, re: Option<&str>, payload: &Object, data: Option<&js_sys::ArrayBuffer>) -> Option<String> {
     let (message, id) = envelope(kind, re, payload)?;
     LINK.with(|l| {
         let l = l.try_borrow().ok()?;
         let l = l.as_ref()?;
-        l.parent.post_message(&message, &l.origin).ok().map(|()| id)
+        let sent = match data {
+            Some(data) => l.parent.post_message_with_transfer(&message, &l.origin, &Array::of1(data)),
+            None => l.parent.post_message(&message, &l.origin),
+        };
+        sent.ok().map(|()| id)
     })
 }
 
