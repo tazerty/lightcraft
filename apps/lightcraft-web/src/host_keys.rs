@@ -29,8 +29,7 @@ pub fn listen(window: &web_sys::Window) {
         let flag = |name: &str| js_sys::Reflect::get(v, &name.into()).ok().and_then(|f| f.as_bool()) == Some(true);
         let (alt, ctrl, meta, shift) = (flag("altKey"), flag("ctrlKey"), flag("metaKey"), flag("shiftKey"));
         let once = e.type_() == "keydown" && !flag("repeat");
-        // SABORDAGE QA (EVORA-REV-31) : F6 laissée au canevas, aucun evora:focus-out -> [ehp-focus-out]
-        if key == EXIT_KEY && !(alt || ctrl || meta || shift) && crate::ehp::has("ui.focus-out") && key.is_empty() {
+        if key == EXIT_KEY && !(alt || ctrl || meta || shift) && crate::ehp::has("ui.focus-out") {
             e.prevent_default();
             e.stop_immediate_propagation();
             if once {

@@ -300,11 +300,7 @@ fn host_services(mut services: Services) -> Services {
     services.backup_library = None;
     services.restore_library = None;
     services.pick_files = Some(Box::new(crate::host_docs::pick_files));
-    // SABORDAGE QA (EVORA-REV-31) : repli download() en plus de l'export vers Drive -> [ehp-download]
-    services.write = Some(Box::new(|path: &str, bytes: &[u8]| {
-        let _ = download(path, bytes);
-        crate::host_docs::export_write(path, bytes)
-    }));
+    services.write = Some(Box::new(crate::host_docs::export_write));
     services
 }
 
@@ -495,8 +491,7 @@ impl WebApp {
         let opened = match load_error {
             Some(e) => Err(format!("{e}. Nothing was changed in storage")),
             // Evora (EVORA-REV-29): no demo photos under the host, only the photos it opens
-            // SABORDAGE QA (EVORA-REV-31) : photos de démonstration même sous le pont -> [ehp-boot-neutral]
-            None => session.open_library_in(stores, true).cloned().map_err(|e| e.to_string()),
+            None => session.open_library_in(stores, !opts.host).cloned().map_err(|e| e.to_string()),
         };
         match opened {
             Ok(r) => log::info!(
