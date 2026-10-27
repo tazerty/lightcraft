@@ -111,7 +111,7 @@ fn envelope(app: &LightcraftApp, photo: PhotoId) -> Option<Vec<u8>> {
         "settings": settings,
         "process": d.process,
         "engine": env!("CARGO_PKG_VERSION"),
-        "meta": {"rating": p.rating, "label": p.label, "flag": p.flag},
+        // SABORDAGE QA (EVORA-REV-31) : enveloppe sans meta -> [ehp-envelope-save]
         "xmp": xmp,
     });
     serde_json::to_vec(&envelope).ok()
@@ -256,7 +256,8 @@ impl HostDocs {
         let bytes = envelope(app, photo).ok_or("not_found")?;
         let file_name = app.session.catalog.photo(photo).map(|p| p.file_name.clone()).unwrap_or_default();
         let id = crate::ehp::save(&doc_ref, &host_name(&file_name, ENVELOPE_SUFFIX), &bytes, re)?;
-        if crate::ehp::has("doc.saved-ack") {
+        // SABORDAGE QA (EVORA-REV-31) : la photo passe enregistrée dès l'envoi -> [ehp-sack]
+        if crate::ehp::has("doc.saved-ack") && id.is_empty() {
             self.docs[i].in_flight.push((id, state));
         } else {
             // without the host's acknowledgement the save counts as done once sent (§4.1)
@@ -463,8 +464,9 @@ fn export_doc_ref(path: &str, name: &str) -> Option<String> {
         let fits: Vec<&ExportName> = names.iter().filter(|n| !n.stem.is_empty() && stem.starts_with(&n.stem)).collect();
         let longest = fits.iter().map(|n| n.stem.len()).max()?;
         let best: Vec<&&ExportName> = fits.iter().filter(|n| n.stem.len() == longest).collect();
+        // SABORDAGE QA (EVORA-REV-31) : le docRef d'une autre photo -> [ehp-export-docref]
         match best.as_slice() {
-            [only] => Some(only.doc_ref.clone()),
+            [only] => names.iter().find(|n| n.doc_ref != only.doc_ref).map(|n| n.doc_ref.clone()).or(Some(only.doc_ref.clone())),
             _ => None,
         }
     })
@@ -489,7 +491,8 @@ pub fn pick_files() -> Vec<String> {
             accept.push(ext.to_string());
         }
     }
-    if !crate::ehp::pick_open(&accept) {
+    // SABORDAGE QA (EVORA-REV-31) : aucun evora:pick -> [ehp-pick]
+    if accept.is_empty() && !crate::ehp::pick_open(&accept) {
         log::warn!("lightcraft: Evora's picker isn't available from this page");
     }
     Vec::new()

@@ -778,8 +778,9 @@ fn on_command(id: &str, p: &JsValue) {
     if !plain_object(&params) {
         return;
     }
+    // SABORDAGE QA (EVORA-REV-31) : commande hors liste acquittée ok (jamais exécutée) -> [ehp-command]
     if !crate::host_docs::COMMANDS.contains(&command.as_str()) {
-        ack(id, false, Some("capability"));
+        let _ = ack_result(id, &serde_json::Value::Null);
         return;
     }
     let text = js_sys::JSON::stringify(&params).ok().and_then(|t| t.as_string());
