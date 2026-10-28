@@ -479,16 +479,19 @@ pub fn export_write(path: &str, bytes: &[u8]) -> Result<(), String> {
     crate::ehp::export(doc_ref.as_deref(), &name, mime, bytes)
 }
 
+/// EVORA-REV-33: what Evora's picker offers (`evora:pick.accept`), the types Evora opens in Revela,
+/// in the order of `App\Services\Revela\RevelaFormats` (its `accepted` types, Revela's CdC F3-02).
+/// The raws still `lab_pending` there (CR3, RAF, RW2 and RWL, PEF, ORF, SRW) are left out until
+/// Evora's lab verifies them (Q-REV-07); `evora:open` still takes any type the engine imports, Evora
+/// being the one that decides what it opens.
+pub const ACCEPT: [&str; 14] = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".dng", ".cr2", ".nef", ".arw", ".psd", ".jxl", ".gif", ".bmp"];
+
 /// The engine's file picker under the host (`Services::pick_files`): Evora's picker, whose photos
-/// arrive as `evora:open` of new documents; nothing is returned now.
+/// arrive as `evora:open` of new documents; nothing is returned now. It offers [`ACCEPT`], each
+/// only if this build imports it too.
 pub fn pick_files() -> Vec<String> {
-    let mut accept: Vec<String> = Vec::new();
-    for ext in lightcraft_engine::import::accept_list().split(',') {
-        let ext = ext.trim();
-        if ext.len() > 1 && ext.starts_with('.') && ext == ext.to_ascii_lowercase() && !accept.iter().any(|a| a == ext) {
-            accept.push(ext.to_string());
-        }
-    }
+    let imported = lightcraft_engine::import::accept_list();
+    let accept: Vec<String> = ACCEPT.iter().copied().filter(|ext| imported.split(',').any(|i| i.trim() == *ext)).map(str::to_string).collect();
     if !crate::ehp::pick_open(&accept) {
         log::warn!("lightcraft: Evora's picker isn't available from this page");
     }

@@ -33,6 +33,13 @@
 //! `evora:export` (every file the engine writes goes to Evora's Drive, never to a download),
 //! `evora:pick {purpose: "open"}` (the engine's file picker is the host's), `evora:focus-out`
 //! (F6, [`crate::host_keys`]). What each document holds is [`crate::host_docs`].
+//!
+//! Evora (EVORA-REV-33, Revela's engine finishes): `command.catalog` (EVO-CMD, Evora's DT-S17).
+//! After the `evora:init` answer, and again after each `evora:lang`, the engine sends
+//! `evora:commands {lang, count, hash, params, commands}`: the commands Evora may run, from the
+//! menus of this host build ([`crate::host_menus`]). `evora:command` then admits any of them as well
+//! as the compiled list, with `confirmed` (a destructive command needs `confirmed: true`) and no free
+//! parameter. `evora:init.accent` and `evora:theme.accent` give the accent Evora's identity shows.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
@@ -51,8 +58,9 @@ const EHP: &str = "1.0";
 /// `storage.memory`: under the host the engine keeps nothing in browser storage. `storage.ns` is
 /// not declared: with nothing stored there is nothing to put in a namespace (Revela's CdC §5.1).
 /// EVORA-REV-29: the save bridge (`doc.*`, `command`), exports and picker (`export.drive`,
-/// `pick.drive`) and the way out at the keyboard (`ui.focus-out`, A-19).
-pub const CAPABILITIES: [&str; 14] = [
+/// `pick.drive`) and the way out at the keyboard (`ui.focus-out`, A-19). EVORA-REV-33: the catalog
+/// of the commands Evora may run (`command.catalog`, EVO-CMD).
+pub const CAPABILITIES: [&str; 15] = [
     "doc.open",
     "doc.save",
     "doc.saved-ack",
@@ -67,11 +75,14 @@ pub const CAPABILITIES: [&str; 14] = [
     "live.lang",
     "live.theme",
     "ui.focus-out",
+    "command.catalog",
 ];
 /// The admitted parent origins, next to `index.html` (§2.3).
 const CONFIG: &str = "evora-host.json";
 const LANGS: [&str; 14] = ["ar", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko", "pt", "ru", "tr", "zh-Hans"];
-const CAPABILITY_NAMES: [&str; 19] = [
+/// Every capability name Evora's shell knows (`CAPABILITIES` of its `host-schema.js`): an
+/// `evora:init` naming any other is ignored whole. EVORA-REV-33: the four of Evora's lot COQ-1.
+const CAPABILITY_NAMES: [&str; 23] = [
     "doc.open",
     "doc.save",
     "doc.saved-ack",
@@ -91,6 +102,10 @@ const CAPABILITY_NAMES: [&str; 19] = [
     "font.inject",
     "author",
     "ui.focus-out",
+    "ui.activity",
+    "drop.files",
+    "prefs.sync",
+    "command.catalog",
 ];
 /// Message ids remembered against replays (then forgotten, oldest first).
 const MAX_SEEN: usize = 4096;
@@ -107,19 +122,20 @@ const ACK_CODES: [&str; 16] = [
 /// What the host asks of the app, applied on its next frame (`web::WebApp`), which answers it.
 pub enum HostEvent {
     /// `evora:init` (after the start-up purge): the engine's language (`None`: English, the host
-    /// shows its banner) and the appearance.
-    Init { id: String, lang: Option<String>, dark: bool },
+    /// shows its banner), the appearance and its accent (`#RRGGBB`, EVORA-REV-33).
+    Init { id: String, lang: Option<String>, dark: bool, accent: String },
     /// `evora:open`: a photo's bytes and file name.
     Open { id: String, doc_ref: String, name: String, bytes: Vec<u8> },
     Lang { id: String, lang: Option<String> },
-    Theme { id: String, dark: bool },
+    Theme { id: String, dark: bool, accent: String },
     /// `evora:request-save` (§4.3): one photo, or every modified one (`None`).
     RequestSave { id: String, doc_ref: Option<String> },
     /// `evora:saved` answering the engine's `evora:save` `re`; `doc_ref`: the new document a copy
     /// made (§7.3).
     Saved { re: String, ok: bool, doc_ref: Option<String> },
-    /// `evora:command` of the compiled list ([`crate::host_docs::COMMANDS`]).
-    Command { id: String, command: String, params: serde_json::Value },
+    /// `evora:command` of the compiled list ([`crate::host_docs::COMMANDS`]) or, with
+    /// `command.catalog`, of the catalog ([`crate::host_menus`]); `confirmed` for a destructive one.
+    Command { id: String, command: String, params: serde_json::Value, confirmed: bool },
     /// `evora:activate` (§7.10): show this document.
     Activate { id: String, doc_ref: String },
     /// Ctrl+S or Cmd+S in the engine ([`crate::host_keys`]): save the photo shown.
@@ -417,6 +433,17 @@ pub fn focus_out() {
     }
 }
 
+/// EVORA-REV-33 (EVO-CMD): `evora:commands {lang, count, hash, params, commands}`, the catalog of
+/// [`crate::host_menus`], with no `re` and no answer expected; only with `command.catalog`.
+pub fn commands(catalog: &serde_json::Value) {
+    if !effective("command.catalog") {
+        return;
+    }
+    let Ok(parsed) = js_sys::JSON::parse(&catalog.to_string()) else { return };
+    let Ok(payload) = parsed.dyn_into::<Object>() else { return };
+    let _ = send("evora:commands", None, &payload);
+}
+
 /// The parent window and its origin, when the page is framed by an origin `evora-host.json`
 /// admits.
 async fn admitted_parent() -> Option<(web_sys::Window, web_sys::Window, String)> {
@@ -589,6 +616,7 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
     let Some(engine_lang) = engine_lang(&get(p, "engineLang")) else { return };
     let Some(dark) = theme(&get(p, "theme")) else { return };
     let accent_ok = is_accent(&get(p, "accent"));
+    let accent = get(p, "accent").as_string().unwrap_or_default();
     let read_only_ok = get(p, "readOnly").as_bool().is_some();
     let Some(ns) = get(p, "storageNs").as_string().filter(|ns| valid_namespace(ns)) else { return };
     let name = get(p, "displayName");
@@ -635,7 +663,7 @@ fn on_init(id: &str, re: &str, p: &JsValue) {
                 l.initialized = true;
             }
         });
-        push(HostEvent::Init { id, lang: engine_lang, dark });
+        push(HostEvent::Init { id, lang: engine_lang, dark, accent });
     });
 }
 
@@ -692,8 +720,9 @@ fn on_theme(id: &str, p: &JsValue) {
         return;
     }
     let Some(dark) = theme(&get(p, "theme")) else { return };
-    // the accent is Evora's indigo already (patch E2); light or dark is what changes here
-    push(HostEvent::Theme { id: id.to_string(), dark });
+    // EVORA-REV-33 (REV-16): the accent the host sends, in place of the constant one of patch E2
+    let accent = get(p, "accent").as_string().unwrap_or_default();
+    push(HostEvent::Theme { id: id.to_string(), dark, accent });
 }
 
 fn on_purge(id: &str, p: &JsValue) {
@@ -769,8 +798,13 @@ fn on_saved(re: &str, p: &JsValue) {
 }
 
 /// `evora:command {command, params}` (§4.3): a command off the compiled list is refused at once.
+/// EVORA-REV-33: with `command.catalog`, `{command, params, confirmed?}`, and a command the catalog
+/// admits ([`crate::host_menus::admitted`]) is let through too; without it, `confirmed` makes the
+/// message ignored, as any other unknown field.
 fn on_command(id: &str, p: &JsValue) {
-    if !only_keys(p, &["command", "params"]) {
+    let catalog = effective("command.catalog");
+    let keys_ok = if catalog { only_keys(p, &["command", "params", "confirmed"]) } else { only_keys(p, &["command", "params"]) };
+    if !keys_ok {
         return;
     }
     let Some(command) = get(p, "command").as_string().filter(|c| is_command(c)) else { return };
@@ -778,7 +812,17 @@ fn on_command(id: &str, p: &JsValue) {
     if !plain_object(&params) {
         return;
     }
-    if !crate::host_docs::COMMANDS.contains(&command.as_str()) {
+    let confirmed = get(p, "confirmed");
+    let confirmed = if confirmed.is_undefined() {
+        false
+    } else {
+        match confirmed.as_bool() {
+            Some(c) => c,
+            None => return,
+        }
+    };
+    let compiled = crate::host_docs::COMMANDS.contains(&command.as_str());
+    if !compiled && !(catalog && crate::host_menus::admitted(&command)) {
         ack(id, false, Some("capability"));
         return;
     }
@@ -787,7 +831,7 @@ fn on_command(id: &str, p: &JsValue) {
         ack(id, false, Some("invalid_content"));
         return;
     };
-    push(HostEvent::Command { id: id.to_string(), command, params });
+    push(HostEvent::Command { id: id.to_string(), command, params, confirmed });
 }
 
 /// `evora:activate {docRef}` (§7.10).

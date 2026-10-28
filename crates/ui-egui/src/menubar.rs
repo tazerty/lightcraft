@@ -345,6 +345,26 @@ const HIDDEN: &[&str] = &[
     "preset.create",
 ];
 
+thread_local! {
+    /// Evora (EVORA-REV-33, exception L5-REV-A): what a host build masks ([`set_host_mask`]); none
+    /// in the app's own builds.
+    static HOST_MASK: std::cell::Cell<Option<fn(&str) -> bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Evora (EVORA-REV-33, exception L5-REV-A): a host build (Evora's Revela) masks the entries that
+/// make no sense under it (the library and its backups, merges, versions, model and data
+/// downloads…). `mask` answers for a command id, or for `@Name`, a whole submenu: a masked entry
+/// leaves the menus ([`menu_bar`]) and its key does nothing ([`crate::shortcuts`]). Nothing is
+/// removed from the code: without a mask, every menu is the app's own.
+pub fn set_host_mask(mask: Option<fn(&str) -> bool>) {
+    HOST_MASK.with(|m| m.set(mask));
+}
+
+/// Is `id` (a command, or `@Name` for a submenu) masked by the host ([`set_host_mask`])?
+pub fn host_masked(id: &str) -> bool {
+    HOST_MASK.with(|m| m.get().is_some_and(|mask| mask(id)))
+}
+
 /// The selection includes a photo in Recently Deleted.
 pub(crate) fn selection_deleted(app: &LightcraftApp) -> bool {
     let s = &app.session;
@@ -354,6 +374,10 @@ pub(crate) fn selection_deleted(app: &LightcraftApp) -> bool {
 /// Items only some hosts have are left out of the others' menus (the web build's library backup);
 /// Restore and Delete Permanently replace Delete for photos in Recently Deleted.
 fn host_supports(app: &LightcraftApp, id: &str) -> bool {
+    // Evora (EVORA-REV-33, L5-REV-A): masked by the host build
+    if host_masked(id) {
+        return false;
+    }
     match id {
         "file.backupLibrary" => app.services.backup_library.is_some(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
@@ -856,6 +880,8 @@ pub fn menu_bar(app: &LightcraftApp) -> Vec<(String, Vec<MenuNode>)> {
         let mut last = Vec::new();
         let sub = |name: &str, used: &mut [bool]| -> Vec<MenuNode> {
             let mut children = expanded(app, name).unwrap_or_default();
+            // Evora (EVORA-REV-33, L5-REV-A): what the host masks leaves the expanded submenus too
+            children.retain(|n| !matches!(n, MenuNode::Item { id, .. } if host_masked(id)));
             let mut dialogs = Vec::new();
             for (i, e) in entries.iter().enumerate() {
                 if !used[i] && e.menu.len() == 2 && e.menu[0] == *title && e.menu[1] == name {
@@ -874,6 +900,9 @@ pub fn menu_bar(app: &LightcraftApp) -> Vec<(String, Vec<MenuNode>)> {
             if *slot == "---" {
                 items.push(MenuNode::Separator);
             } else if let Some(name) = slot.strip_prefix('@') {
+                if host_masked(slot) {
+                    continue;
+                }
                 let children = sub(name, &mut used);
                 items.push(MenuNode::Submenu { label: name.to_string(), children });
             } else if let Some(i) = entries.iter().position(|e| e.id == *slot && e.menu.first().map(String::as_str) == Some(title)) {
@@ -896,6 +925,9 @@ pub fn menu_bar(app: &LightcraftApp) -> Vec<(String, Vec<MenuNode>)> {
             }
         }
         for name in extra_subs {
+            if host_masked(&format!("@{name}")) {
+                continue;
+            }
             let children = sub(&name, &mut used);
             items.push(MenuNode::Submenu { label: name, children });
         }

@@ -455,6 +455,9 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context) {
             }
         }
     });
+    // Evora (EVORA-REV-33, L5-REV-A): what a host build masks does nothing at the keyboard either
+    fire.retain(|f| !crate::menubar::host_masked(f));
+    aliased.retain(|(id, _)| !crate::menubar::host_masked(id));
     use crate::panels::compare;
     // rating/flag/label keys: in Compare/Survey they act on the active photo only; Shift+key or
     // Auto Advance then moves on (next candidate in Compare, next photo elsewhere)

@@ -166,10 +166,24 @@ impl Default for Tokens {
 thread_local! {
     /// Evora (E2): the host's identity in place of the themes' colours ([`set_evora_palette`]).
     static EVORA_PALETTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Evora (EVORA-REV-33, REV-16): the accent the host sent (`evora:init`, `evora:theme`), shown
+    /// by Evora's tokens in place of [`EVORA_ACCENT`] ([`set_evora_accent`]).
+    static EVORA_ACCENT_SHOWN: std::cell::Cell<Color32> = const { std::cell::Cell::new(EVORA_ACCENT) };
 }
 
-/// Evora's accent colour (Tailwind indigo-600, `#4F46E5`).
+/// Evora's accent colour (Tailwind indigo-600, `#4F46E5`): the default until the host sends one.
 pub const EVORA_ACCENT: Color32 = Color32::from_rgb(0x4f, 0x46, 0xe5);
+
+/// Evora (EVORA-REV-33, REV-16): the accent the host imposes (`evora:init.accent`,
+/// `evora:theme.accent`), used by Evora's identity from the next [`apply_kind`].
+pub fn set_evora_accent(accent: Color32) {
+    EVORA_ACCENT_SHOWN.with(|shown| shown.set(accent));
+}
+
+/// The accent Evora's identity shows ([`set_evora_accent`]; [`EVORA_ACCENT`] by default).
+pub fn evora_accent() -> Color32 {
+    EVORA_ACCENT_SHOWN.with(std::cell::Cell::get)
+}
 
 /// Evora (E2): show Evora's identity (Tailwind's grey neutrals and the indigo accent
 /// [`EVORA_ACCENT`]) in place of every theme's colours, light or dark as the Appearance Mode
@@ -214,7 +228,7 @@ fn evora_tokens(dark: bool) -> Tokens {
             track: rgb(0x4b5563),
             thumb: rgb(0xd1d5db),
             thumb_hover: rgb(0xf9fafb),
-            accent: EVORA_ACCENT,
+            accent: evora_accent(),
             star: rgb(0xe5e7eb),
             pick: rgb(0xf9fafb),
             reject: rgb(0xef4444),
@@ -246,7 +260,7 @@ fn evora_tokens(dark: bool) -> Tokens {
             track: rgb(0xd1d5db),
             thumb: rgb(0x4b5563),
             thumb_hover: rgb(0x111827),
-            accent: EVORA_ACCENT,
+            accent: evora_accent(),
             star: rgb(0x374151),
             pick: rgb(0x1f2937),
             reject: rgb(0xdc2626),

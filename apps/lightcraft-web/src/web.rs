@@ -9,6 +9,10 @@
 //! EVORA-REV-29: each of those photos is one of the host's documents ([`crate::host_docs`]: saves,
 //! commands, exports to Evora's Drive, Evora's picker); no demo photos, no `?bench`, no library
 //! backup or restore, and no download.
+//! EVORA-REV-33: under the host, the menus and keys of what makes no sense in Evora's Revela are
+//! masked, the sidebar shows the session's photos, the page is named Revela, the accent is the
+//! host's, the file picker offers the types Evora opens, and the catalog of the commands Evora may
+//! run is sent ([`crate::host_menus`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,6 +40,9 @@ use crate::workers::{THUMB_INDEX, Workers};
 fn accept_list() -> String {
     lightcraft_engine::import::accept_list()
 }
+
+/// Evora (EVORA-REV-33, E1): the name the page shows under the host, never the upstream app's.
+const BRAND: &str = "Revela";
 
 /// After a failed save, wait this long before trying again (ms).
 const SAVE_RETRY_MS: f64 = 2000.0;
@@ -548,6 +555,16 @@ impl WebApp {
             Some(other) => log::warn!("lightcraft: unknown theme {other:?} (light or dark); the app's own theme stays"),
             None => {}
         }
+        // Evora (EVORA-REV-33, REV-07, REV-08): under the host, what makes no sense in Evora's Revela
+        // leaves the menus and the keyboard (the library, merges, versions, downloads…), and the
+        // sidebar shows the session's photos, without albums or folders (D-10)
+        if opts.host {
+            lightcraft_ui_egui::menubar::set_host_mask(Some(crate::host_menus::masked as fn(&str) -> bool));
+            let hidden = json!([{"id": "albums", "hidden": true}, {"id": "folders", "hidden": true}]);
+            if let Ok(layout) = lightcraft_ui_egui::sidebar::SidebarLayout::parse(&hidden) {
+                app.ui.sidebar = layout;
+            }
+        }
         app.library_problem = problem;
         let n = opts.workers.unwrap_or_else(|| {
             let cores = window().map_or(1, |w| w.navigator().hardware_concurrency() as usize);
@@ -728,17 +745,20 @@ impl WebApp {
         use crate::ehp::{HostEvent, ack};
         while let Some(event) = crate::ehp::next_event() {
             match event {
-                HostEvent::Init { id, lang, dark } => {
+                HostEvent::Init { id, lang, dark, accent } => {
                     self.set_host_language(lang.as_deref());
-                    self.set_host_theme(ctx, dark);
+                    self.set_host_theme(ctx, dark, &accent);
                     ack(&id, true, None);
+                    // EVORA-REV-33 (EVO-CMD): the commands Evora may run, in the engine's language
+                    crate::host_menus::announce(&self.app);
                 }
                 HostEvent::Lang { id, lang } => {
                     self.set_host_language(lang.as_deref());
                     ack(&id, true, None);
+                    crate::host_menus::announce(&self.app);
                 }
-                HostEvent::Theme { id, dark } => {
-                    self.set_host_theme(ctx, dark);
+                HostEvent::Theme { id, dark, accent } => {
+                    self.set_host_theme(ctx, dark, &accent);
                     ack(&id, true, None);
                 }
                 HostEvent::Open { id, doc_ref, name, bytes } => match self.open_bytes(&name, bytes) {
@@ -756,7 +776,14 @@ impl WebApp {
                 },
                 HostEvent::RequestSave { id, doc_ref } => self.docs.request_save(&self.app, &id, doc_ref.as_deref()),
                 HostEvent::Saved { re, ok, doc_ref } => self.docs.saved(&self.app, &re, ok, doc_ref),
-                HostEvent::Command { id, command, params } => self.docs.command(&mut self.app, &id, &command, &params),
+                HostEvent::Command { id, command, params, confirmed } => {
+                    if crate::host_docs::COMMANDS.contains(&command.as_str()) {
+                        self.docs.command(&mut self.app, &id, &command, &params);
+                    } else {
+                        // EVORA-REV-33 (EVO-CMD): a command of the catalog
+                        crate::host_menus::run(&mut self.app, &id, &command, &params, confirmed);
+                    }
+                }
                 HostEvent::Activate { id, doc_ref } => self.docs.activate(&mut self.app, &id, &doc_ref),
                 HostEvent::SaveShortcut => self.docs.save_shown(&self.app),
             }
@@ -769,10 +796,13 @@ impl WebApp {
     }
 
     /// Evora (E2 through E4): Evora's identity, light or dark; restyled now, since the palette can
-    /// change while the theme kind doesn't.
-    fn set_host_theme(&mut self, ctx: &egui::Context, dark: bool) {
+    /// change while the theme kind doesn't. EVORA-REV-33 (REV-16): with the host's accent.
+    fn set_host_theme(&mut self, ctx: &egui::Context, dark: bool, accent: &str) {
         use lightcraft_ui_egui::state::AppearanceMode;
         lightcraft_ui_egui::theme::set_evora_palette(true);
+        if let Some(color) = host_accent(accent) {
+            lightcraft_ui_egui::theme::set_evora_accent(color);
+        }
         self.app.ui.settings.appearance_mode = if dark { AppearanceMode::Dark } else { AppearanceMode::Light };
         lightcraft_ui_egui::theme::apply_kind(ctx, self.app.ui.settings.theme(None));
     }
@@ -850,6 +880,8 @@ impl WebApp {
             let r = match crate::automation::params(&params) {
                 Err(e) => Err(format!("{id}: {e}")),
                 Ok(_) if id == "web.stats" => Ok(self.web_stats()),
+                // EVORA-REV-33: the menus as displayed (CI bench, Evora's lab)
+                Ok(_) if id == "web.menus" => Ok(crate::host_menus::menus(&self.app)),
                 Ok(params) if id == "web.renderAudit" => Ok(render_audit(ctx, &params)),
                 Ok(params) => self.app.run(&id, params),
             };
@@ -859,6 +891,13 @@ impl WebApp {
             };
         }
     }
+}
+
+/// Evora (EVORA-REV-33, REV-16): the host's accent (`#RRGGBB`, its form checked by the bridge).
+fn host_accent(hex: &str) -> Option<egui::Color32> {
+    let digits = hex.strip_prefix('#').filter(|d| d.len() == 6)?;
+    let [_, r, g, b] = u32::from_str_radix(digits, 16).ok()?.to_be_bytes();
+    Some(egui::Color32::from_rgb(r, g, b))
 }
 
 /// Characters worth auditing in displayed text: General Punctuation through Miscellaneous Symbols
@@ -971,6 +1010,8 @@ impl eframe::App for WebApp {
         self.app.ui(ui);
         // eframe's web runner ignores `ViewportCommand::Title`: name the open photo in the page title
         let title = self.app.page_title(self.files.is_dirty() || self.flushing.get());
+        // Evora (EVORA-REV-33, E1): under the host, the page is named Revela, never the upstream app
+        let title = if self.host { title.replace("LightCraft", BRAND) } else { title };
         if title != self.title
             && let Some(doc) = window().and_then(|w| w.document())
         {
@@ -1065,7 +1106,7 @@ pub fn start(chinese_font: Vec<u8>) {
             }
             Err(e) => {
                 log::error!("LightCraft failed to start: {e:?}");
-                set_status(&format!("LightCraft failed to start: {e:?}"));
+                set_status(&format!("{} failed to start: {e:?}", if host { BRAND } else { "LightCraft" }));
                 if host {
                     crate::ehp::report_failure(if format!("{e:?}").contains("WebGL") { "no_webgl2" } else { "init" });
                 }
