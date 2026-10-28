@@ -491,7 +491,8 @@ pub const ACCEPT: [&str; 14] = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp
 /// only if this build imports it too.
 pub fn pick_files() -> Vec<String> {
     let imported = lightcraft_engine::import::accept_list();
-    let accept: Vec<String> = ACCEPT.iter().copied().filter(|ext| imported.split(',').any(|i| i.trim() == *ext)).map(str::to_string).collect();
+    // SABORDAGE QA (EVORA-REV-36) S7 : les extensions d'import du moteur, pas les types d'Evora
+    let accept: Vec<String> = imported.split(',').map(str::trim).filter(|e| e.len() > 1 && *e == e.to_ascii_lowercase()).map(str::to_string).collect();
     if !crate::ehp::pick_open(&accept) {
         log::warn!("lightcraft: Evora's picker isn't available from this page");
     }

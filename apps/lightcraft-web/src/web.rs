@@ -559,7 +559,8 @@ impl WebApp {
         // leaves the menus and the keyboard (the library, merges, versions, downloads…), and the
         // sidebar shows the session's photos, without albums or folders (D-10)
         if opts.host {
-            lightcraft_ui_egui::menubar::set_host_mask(Some(crate::host_menus::masked as fn(&str) -> bool));
+            // SABORDAGE QA (EVORA-REV-36) S1 : le masque des menus n'est pas posé
+            let _ = crate::host_menus::masked as fn(&str) -> bool;
             let hidden = json!([{"id": "albums", "hidden": true}, {"id": "folders", "hidden": true}]);
             if let Ok(layout) = lightcraft_ui_egui::sidebar::SidebarLayout::parse(&hidden) {
                 app.ui.sidebar = layout;
@@ -800,7 +801,8 @@ impl WebApp {
     fn set_host_theme(&mut self, ctx: &egui::Context, dark: bool, accent: &str) {
         use lightcraft_ui_egui::state::AppearanceMode;
         lightcraft_ui_egui::theme::set_evora_palette(true);
-        if let Some(color) = host_accent(accent) {
+        // SABORDAGE QA (EVORA-REV-36) S3 : l'accent de la coquille est ignoré
+        if let Some(color) = host_accent(accent).filter(|_| false) {
             lightcraft_ui_egui::theme::set_evora_accent(color);
         }
         self.app.ui.settings.appearance_mode = if dark { AppearanceMode::Dark } else { AppearanceMode::Light };
@@ -1011,7 +1013,8 @@ impl eframe::App for WebApp {
         // eframe's web runner ignores `ViewportCommand::Title`: name the open photo in the page title
         let title = self.app.page_title(self.files.is_dirty() || self.flushing.get());
         // Evora (EVORA-REV-33, E1): under the host, the page is named Revela, never the upstream app
-        let title = if self.host { title.replace("LightCraft", BRAND) } else { title };
+        // SABORDAGE QA (EVORA-REV-36) S2 : le titre garde le nom amont
+        let title = if self.host && BRAND.is_empty() { title.replace("LightCraft", BRAND) } else { title };
         if title != self.title
             && let Some(doc) = window().and_then(|w| w.document())
         {
