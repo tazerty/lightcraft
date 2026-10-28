@@ -25,6 +25,14 @@
 // son étiquette. Et contre le VRAI moteur sabordé (removeEntry, deleteDatabase et removeItem sans
 // effet dans sa page) : il doit rougir par les détecteurs de purge. C'est la preuve, à chaque
 // exécution, que le banc sait rougir.
+//
+// EVORA-REV-34 (finitions du moteur, lot REV-FK-B2) : « pont-ehp » juge aussi, au rendu, les menus
+// masqués sous le pont (REV-07, REV-08 : web.menus), le nom affiché (E1 : « Revela », jamais
+// « LightCraft », titre de la page et menus), l'accent reçu de la coquille (REV-16 : evora:init puis
+// evora:theme), les types offerts par le sélecteur d'Evora (ceux de RevelaFormats), et le catalogue
+// des commandes (command.catalog : evora:commands en français puis en allemand, liste blanche par
+// construction, commandes exécutées, paramètres déclarés seulement, commande destructive refusée
+// sans confirmed puis admise avec) ; huit moteurs factices de plus portent chacun un de ces défauts.
 
 export const NS = 'ab'.repeat(32);
 export const OTHER_NS = 'cd'.repeat(32);
@@ -34,9 +42,36 @@ export const PHOTO2 = 'seconde-photo.jpg';
 export const PHOTO3 = 'troisieme-photo.jpg';
 // Ce que le scénario exerce : le moteur doit déclarer exactement cela, ni plus ni moins.
 export const EXERCISED = ['doc.open', 'doc.save', 'doc.saved-ack', 'doc.dirty', 'doc.multi', 'doc.request-save', 'export.drive', 'pick.drive',
-  'command', 'storage.memory', 'storage.purge', 'live.lang', 'live.theme', 'ui.focus-out'];
+  'command', 'storage.memory', 'storage.purge', 'live.lang', 'live.theme', 'ui.focus-out', 'command.catalog'];
 // La liste blanche compilée du moteur (Revela, CdC §5.3) ; toute autre commande est refusée (capability).
 export const COMMANDS = ['revela.apply', 'develop.get', 'develop.controls'];
+// EVORA-REV-34 : finitions du moteur. Types offerts par le sélecteur d'Evora : les types « accepted » de
+// App\\Services\\Revela\\RevelaFormats (dépôt evora.st), dans leur ordre.
+export const REVELA_ACCEPT = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.dng', '.cr2', '.nef', '.arw', '.psd', '.jxl', '.gif', '.bmp'];
+// Entrées que le moteur hôte masque (relevé par sondage : bibliothèque, imports, fusions, versions,
+// téléchargements, autres éditeurs, langue et apparence de l'app, pages d'aide), absentes des menus
+// ET du catalogue ; sous-menus masqués (noms anglais du modèle de menus).
+export const MASKED_IDS = ['file.importLightroom', 'file.addFolder', 'file.backupLibrary', 'file.importPresets', 'app.openLibrary', 'app.newLibrary',
+  'dialog.newAlbum', 'dialog.smartAlbum', 'library.toggleAutoWriteXmp', 'library.compact', 'version.create', 'panel.versions', 'photo.virtualCopy',
+  'photo.tagFromTracklog', 'metadata.downloadPlaceNames', 'faces.detect', 'view.people', 'dialog.mergeHdr', 'dialog.mergePanorama', 'stack.group',
+  'photo.saveMetadataToFile', 'photo.editInPhotoCraft', 'app.help', 'app.github', 'app.whatsNew', 'app.quit', 'app.language.french', 'view.secondWindow'];
+export const MASKED_SUBMENUS = ['Open Recent Library', 'Import from Device', 'Add to Album', 'Stack', 'Stacks', 'Photo Merge', 'Previews', 'Edit In',
+  'Appearance', 'Language', 'Sidebar Sections', 'Debug', 'Loupe Overlay'];
+// Témoin des menus : ces entrées restent (un masquage qui viderait les menus rougit).
+export const KEPT_IDS = ['file.addPhotos', 'dialog.export', 'edit.undo', 'develop.treatment', 'photo.rotateLeft', 'panel.edit', 'app.shortcuts', 'app.about'];
+// Catalogue des commandes (command.catalog) : ce qu'il doit contenir au moins, ce qui y déclare ses
+// paramètres, ce qui y est destructif, et les seules entrées « file.* » admises.
+export const CATALOG_IDS = ['edit.undo', 'develop.treatment', 'develop.auto', 'photo.rotateLeft', 'photo.pick', 'photo.rate', 'photo.flag', 'photo.label',
+  'photo.delete', 'dialog.export', 'file.addPhotos'];
+export const DECLARED_IDS = ['photo.rate', 'photo.flag', 'photo.label', 'develop.treatment'];
+export const DESTRUCTIVE = ['photo.delete'];
+export const FILE_ADMITTED = ['file.addPhotos'];
+// E1 : le nom affiché par le moteur sous le pont, et le nom amont qui ne s'affiche jamais.
+export const BRAND = 'Revela';
+export const UPSTREAM_BRAND = 'LightCraft';
+// REV-16 : l'accent de evora:init (teal-600, teinte de Revela), puis celui de evora:theme (indigo d'Evora).
+export const ACCENT_INIT = '#0D9488';
+export const ACCENT_LIVE = '#4F46E5';
 
 // Défauts des moteurs factices et étiquette d'erreur attendue (null : témoin conforme, doit être vert).
 export const WITNESS_FLAWS = [
@@ -73,6 +108,15 @@ export const WITNESS_FLAWS = [
   ['selecteur-absent', '[ehp-pick]'],
   ['sans-focus-out', '[ehp-focus-out]'],
   ['demo-au-demarrage', '[ehp-boot-neutral]'],
+  // EVORA-REV-34 : finitions du moteur
+  ['menus-vivants', '[ehp-menus-masked]'],
+  ['marque-affichee', '[ehp-brand]'],
+  ['accent-ignore', '[ehp-theme-accent]'],
+  ['catalogue-absent', '[ehp-commands]'],
+  ['catalogue-inerte', '[ehp-command-run]'],
+  ['parametre-libre', '[ehp-command-params]'],
+  ['destructive-sans-accord', '[ehp-command-destructive]'],
+  ['accept-amont', '[ehp-accept]'],
 ];
 
 // Témoin sur le VRAI moteur : effacements sans effet dans sa page (sabotage.js), purges qui ne
@@ -277,7 +321,7 @@ export const HARNESS_JS = `'use strict';
     }
   };
   const caps = () => ((ready() || {}).payload || {}).capabilities || [];
-  const initPayload = (ns, lang, theme) => ({ lang, engineLang: lang, theme, accent: '#4F46E5', readOnly: false, storageNs: ns,
+  const initPayload = (ns, lang, theme, accent) => ({ lang, engineLang: lang, theme, accent: accent || '${ACCENT_LIVE}', readOnly: false, storageNs: ns,
     capabilities: caps(), prefs: {}, limits: { maxDocumentBytes: 8388608, maxExportBytes: 8388608 } });
   const steps = {
     seed: async () => {
@@ -294,7 +338,8 @@ export const HARNESS_JS = `'use strict';
       await fromStrangers(() => ({ v: 1, type: 'evora:init', id: ulid(), re: r.id, payload: initPayload(cfg.other, 'ja', 'light') }));
       await sleep(400);
       ids.init = ulid();
-      toEngine({ v: 1, type: 'evora:init', id: ids.init, re: r.id, payload: initPayload(cfg.ns, 'fr', 'dark') });
+      // EVORA-REV-34 (REV-16) : l'accent de Revela à l'init, celui d'Evora par evora:theme
+      toEngine({ v: 1, type: 'evora:init', id: ids.init, re: r.id, payload: initPayload(cfg.ns, 'fr', 'dark', '${ACCENT_INIT}') });
       const ack = await ackOf(ids.init, 30000);
       return { ack: ack && ack.payload, storage: await observe() };
     },
@@ -318,7 +363,7 @@ export const HARNESS_JS = `'use strict';
     },
     theme: async () => {
       ids.theme = ulid();
-      toEngine({ v: 1, type: 'evora:theme', id: ids.theme, payload: { theme: 'light', accent: '#4F46E5' } });
+      toEngine({ v: 1, type: 'evora:theme', id: ids.theme, payload: { theme: 'light', accent: '${ACCENT_LIVE}' } });
       const ack = await ackOf(ids.theme, 30000);
       return { ack: ack && ack.payload };
     },
@@ -427,13 +472,15 @@ export const WITNESS_JS = `'use strict';
   const C = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const ulid = () => Array.from(crypto.getRandomValues(new Uint8Array(26)), (b) => C[b & 31]).join('');
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
-  const st = { language: 'en', dark: true, evora: true, photos: flaw === 'demo-au-demarrage' ? 24 : 0, ns: '', inited: false, readyId: null,
+  const st = { language: 'en', dark: true, evora: true, accent: '#4f46e5', photos: flaw === 'demo-au-demarrage' ? 24 : 0, ns: '', inited: false, readyId: null,
     seen: new Set(), caps: [], docs: [], active: null, nextPhoto: 100 };
+  // EVORA-REV-34 : l'état qu'un enregistrement garde (réglages, noir et blanc, note, drapeau)
+  const sig = (d) => JSON.stringify([d.exposure, d.bw, d.rating, d.flag]);
   const docOf = (ref) => st.docs.find((d) => d.docRef === ref) || null;
   const activeDoc = () => docOf(st.active);
   let send = () => null;
   const tellDirty = (d) => {
-    const dirty = d.exposure !== d.baseline;
+    const dirty = sig(d) !== d.baseline;
     if (d.told === dirty) return;
     d.told = dirty;
     send('evora:dirty', flaw === 'modifie-sans-docref' ? { dirty } : { dirty, docRef: d.docRef });
@@ -442,12 +489,12 @@ export const WITNESS_JS = `'use strict';
     + JSON.stringify({ light: { exposure: d.exposure } }) + '</lc:settings></x:xmpmeta><?xpacket end="w"?>';
   const saveDoc = (d, re) => {
     const env = { format: 'revela-save', version: 1, settings: { light: { exposure: d.exposure }, process: 2 }, process: 2, engine: '0.14.0',
-      meta: { rating: 0, label: null, flag: 'none' }, xmp: xmpOf(d) };
+      meta: { rating: d.rating, label: null, flag: d.flag }, xmp: xmpOf(d) };
     if (flaw === 'enveloppe-fausse') delete env.xmp;
     const bytes = new TextEncoder().encode(JSON.stringify(env)).buffer;
     const id = send('evora:save', { docRef: d.docRef, name: d.name + '.revela.json', saveAs: false, bytes }, re, [bytes]);
-    d.inflight.push({ id, exposure: d.exposure });
-    if (flaw === 'sauve-sans-accuse') { d.baseline = d.exposure; tellDirty(d); }
+    d.inflight.push({ id, sig: sig(d) });
+    if (flaw === 'sauve-sans-accuse') { d.baseline = sig(d); tellDirty(d); }
   };
   const exportFile = (d, other) => {
     const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70]).buffer;
@@ -466,10 +513,19 @@ export const WITNESS_JS = `'use strict';
     const p = JSON.parse(text || '{}');
     if (id === 'web.stats') {
       const a = activeDoc();
-      return JSON.stringify({ language: st.language, theme: { evora: st.evora, dark: st.dark, accent: '#4f46e5' }, storage: 'memory',
+      return JSON.stringify({ language: st.language, theme: { evora: st.evora, dark: st.dark, accent: st.accent }, storage: 'memory',
         photos: st.photos, active: a ? a.name : null, activeThumb: !!a, activeFailure: null, renderQueue: 0, rendersInFlight: 0,
-        host: { docs: st.docs.map((d) => ({ docRef: d.docRef, photo: d.photo, name: d.name, dirty: d.exposure !== d.baseline, inFlight: d.inflight.length })),
+        host: { docs: st.docs.map((d) => ({ docRef: d.docRef, photo: d.photo, name: d.name, dirty: sig(d) !== d.baseline, inFlight: d.inflight.length })),
           active: st.active, autoWrite: false, neutral: { bench: false, backup: false, restore: false } } });
+    }
+    if (id === 'web.menus') {
+      const items = kept.map((k) => ({ id: k, label: k === 'app.about' ? 'About Revela' : k, path: ['File'] }));
+      const submenus = [{ name: 'Set Rating', label: 'Set Rating' }];
+      if (flaw === 'menus-vivants') {
+        items.push({ id: 'file.importLightroom', label: 'Import LRCAT Catalog', path: ['File'] });
+        submenus.push({ name: 'Photo Merge', label: 'Photo Merge' });
+      }
+      return JSON.stringify({ masking: flaw !== 'menus-vivants', items, submenus });
     }
     if (id === 'develop.set') {
       const d = activeDoc();
@@ -485,7 +541,7 @@ export const WITNESS_JS = `'use strict';
     }
     if (id === 'file.addPhotos') {
       if (flaw !== 'selecteur-absent') {
-        send('evora:pick', { purpose: 'open', accept: ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.dng'], multiple: true });
+        send('evora:pick', { purpose: 'open', accept: flaw === 'accept-amont' ? revelaAccept.concat(['.cr3']) : revelaAccept, multiple: true });
       }
       return 'null';
     }
@@ -525,7 +581,58 @@ export const WITNESS_JS = `'use strict';
     }
     for (const k of Object.keys(localStorage)) if (flaw === 'purge-excessive' || k.startsWith('lightcraft')) localStorage.removeItem(k);
   };
+  // EVORA-REV-34 : catalogue des commandes (command.catalog), menus et types offerts du moteur factice
+  const catIds = ${JSON.stringify(CATALOG_IDS)};
+  const declared = ${JSON.stringify(DECLARED_IDS)};
+  const kept = ${JSON.stringify(KEPT_IDS)};
+  const revelaAccept = ${JSON.stringify(REVELA_ACCEPT)};
+  const keyOf = { 'photo.rate': 'rating', 'photo.flag': 'flag', 'photo.label': 'label', 'develop.treatment': 'bw' };
+  const catalog = () => {
+    const commands = catIds.map((id) => {
+      const c = { id, label: st.language + ' ' + id, path: [st.language + ' Photo'], enabled: true, destructive: id === 'photo.delete' };
+      if (declared.includes(id)) c.params = { type: 'object', additionalProperties: false, properties: { [keyOf[id]]: {} } };
+      return c;
+    });
+    return { lang: st.language, count: commands.length, hash: 'f00dfeedcafe0001', params: { type: 'object', maxProperties: 0 }, commands };
+  };
+  const announce = () => { if (flaw !== 'catalogue-absent' && st.caps.includes('command.catalog')) send('evora:commands', catalog()); };
+  const pathLike = (v) => typeof v === 'string' && ['/', '\\\\', '..', ':', 'opfs', 'evora'].some((t) => v.toLowerCase().includes(t));
+  const paramsOk = (id, q) => {
+    if (flaw === 'parametre-libre') return true;
+    if (Object.values(q).some(pathLike)) return false;
+    const k = keyOf[id];
+    const keys = Object.keys(q);
+    if (!k) return keys.length === 0;
+    if (keys.some((x) => x !== k)) return false;
+    const v = q[k];
+    if (v === undefined) return id === 'develop.treatment';
+    if (id === 'photo.rate') return Number.isInteger(v) && v >= 0 && v <= 5;
+    if (id === 'photo.flag') return ['pick', 'reject', 'none'].includes(v);
+    if (id === 'photo.label') return ['red', 'yellow', 'green', 'blue', 'purple', 'none'].includes(v);
+    return typeof v === 'boolean';
+  };
+  const runCatalog = (p) => {
+    const q = p.params || {};
+    if (!paramsOk(p.command, q)) return { ok: false, code: 'invalid_content' };
+    if (p.command === 'photo.delete' && p.confirmed !== true && flaw !== 'destructive-sans-accord') return { ok: false, code: 'forbidden' };
+    const d = activeDoc();
+    if (!d) return { ok: false, code: 'busy' };
+    if (flaw === 'catalogue-inerte') return { ok: true, result: null };
+    if (p.command === 'photo.delete') {
+      st.docs = st.docs.filter((x) => x !== d);
+      st.active = st.docs.length ? st.docs[st.docs.length - 1].docRef : null;
+      send('evora:closed', { docRef: d.docRef });
+      return { ok: true, result: { changed: 1 } };
+    }
+    if (p.command === 'develop.treatment') d.bw = q.bw === undefined ? !d.bw : q.bw;
+    else if (p.command === 'photo.rate') d.rating = q.rating;
+    else if (p.command === 'photo.pick') d.flag = 'pick';
+    else if (p.command === 'photo.flag') d.flag = q.flag;
+    tellDirty(d);
+    return { ok: true, result: null };
+  };
   const command = (p) => {
+    if (catIds.includes(p.command) && st.caps.includes('command.catalog')) return runCatalog(p);
     if (!${JSON.stringify(COMMANDS)}.includes(p.command) && flaw !== 'commande-ouverte') return { ok: false, code: 'capability' };
     if (flaw === 'commande-ouverte' && !${JSON.stringify(COMMANDS)}.includes(p.command)) return { ok: true, result: null };
     const q = p.params || {};
@@ -545,9 +652,9 @@ export const WITNESS_JS = `'use strict';
       exposure = ((JSON.parse(m[1]) || {}).light || {}).exposure ?? exposure;
     }
     if (flaw !== 'application-ignoree') d.exposure = exposure;
-    if (q.baseline !== false) d.baseline = d.exposure;
+    if (q.baseline !== false) d.baseline = sig(d);
     tellDirty(d);
-    return { ok: true, result: { applied: true, dirty: d.exposure !== d.baseline } };
+    return { ok: true, result: { applied: true, dirty: sig(d) !== d.baseline } };
   };
   (async () => {
     if (window.parent === window) return;
@@ -570,7 +677,7 @@ export const WITNESS_JS = `'use strict';
       } else if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey) && st.caps.includes('doc.save')) {
         e.preventDefault(); e.stopImmediatePropagation();
         const d = activeDoc();
-        if (d && d.exposure !== d.baseline) saveDoc(d, null);
+        if (d && sig(d) !== d.baseline) saveDoc(d, null);
       }
     }, true);
     addEventListener('message', async (e) => {
@@ -589,11 +696,16 @@ export const WITNESS_JS = `'use strict';
         if (flaw === 'ecriture-au-demarrage') localStorage.setItem('egui_memory_ron', '{}');
         st.language = p.engineLang || 'en';
         st.dark = p.theme === 'dark';
+        if (flaw !== 'accent-ignore') st.accent = String(p.accent).toLowerCase();
         ack(d.id);
+        announce();
       } else if (d.type === 'evora:open' && st.inited) {
+        document.title = p.name + ' — ' + (flaw === 'marque-affichee' ? 'LightCraft' : 'Revela');
         if (flaw !== 'ouverture-feinte') {
           st.photos += 1;
-          st.docs.push({ docRef: p.docRef, name: p.name, photo: (st.nextPhoto += 1), exposure: 0, baseline: 0, told: null, inflight: [] });
+          const doc = { docRef: p.docRef, name: p.name, photo: (st.nextPhoto += 1), exposure: 0, bw: false, rating: 0, flag: 'none', told: null, inflight: [] };
+          doc.baseline = sig(doc);
+          st.docs.push(doc);
           st.active = p.docRef;
         }
         if (flaw === 'ecriture-en-seance') await put('library/catalog.snap');
@@ -604,20 +716,22 @@ export const WITNESS_JS = `'use strict';
       } else if (d.type === 'evora:lang' && st.inited) {
         if (flaw !== 'langue-ignoree') st.language = p.engineLang || 'en';
         ack(d.id);
+        announce();
       } else if (d.type === 'evora:theme' && st.inited) {
         st.dark = p.theme === 'dark';
+        if (flaw !== 'accent-ignore') st.accent = String(p.accent).toLowerCase();
         ack(d.id);
       } else if (d.type === 'evora:request-save' && st.inited) {
         const targets = p.docRef ? [docOf(p.docRef)] : st.docs.slice();
         if (p.docRef && !targets[0]) { ack(d.id, { ok: false, code: 'not_found' }); return; }
         let re = d.id;
-        for (const t of targets) if (t.exposure !== t.baseline) { saveDoc(t, re); re = null; }
+        for (const t of targets) if (sig(t) !== t.baseline) { saveDoc(t, re); re = null; }
         if (re) ack(d.id, { code: 'clean' });
       } else if (d.type === 'evora:saved' && st.inited) {
         const doc = st.docs.find((x) => x.inflight.some((f) => f.id === d.re));
         if (!doc) return;
         const f = doc.inflight.splice(doc.inflight.findIndex((x) => x.id === d.re), 1)[0];
-        if (p.ok && flaw !== 'sauve-sans-accuse') { doc.baseline = f.exposure; tellDirty(doc); }
+        if (p.ok && flaw !== 'sauve-sans-accuse') { doc.baseline = f.sig; tellDirty(doc); }
       } else if (d.type === 'evora:command' && st.inited) {
         const r = command(p);
         send('evora:ack', r.ok ? { ok: true, result: r.result } : { ok: false, code: r.code }, d.id);
@@ -710,8 +824,12 @@ export async function runEhp(ctx) {
   okAck(init, 'init');
   const s1 = await engineStats();
   result.ehpStats = { init: s1 };
-  if (s1.language !== 'fr' || !s1.theme || s1.theme.dark !== true || s1.theme.evora !== true || s1.theme.accent !== '#4f46e5' || s1.storage !== 'memory') {
-    errors.push(`[ehp-init] evora:init non appliqué (attendu fr, sombre, Evora #4f46e5, mémoire) : ${show({ language: s1.language, theme: s1.theme, storage: s1.storage })}`);
+  if (s1.language !== 'fr' || !s1.theme || s1.theme.dark !== true || s1.theme.evora !== true || s1.storage !== 'memory') {
+    errors.push(`[ehp-init] evora:init non appliqué (attendu fr, sombre, Evora, mémoire) : ${show({ language: s1.language, theme: s1.theme, storage: s1.storage })}`);
+  }
+  // EVORA-REV-34 (REV-16) : l'accent de evora:init, à la place de l'indigo constant d'E2
+  if (!s1.theme || s1.theme.accent !== ACCENT_INIT.toLowerCase()) {
+    errors.push(`[ehp-theme-accent] evora:init {accent: ${ACCENT_INIT}} non appliqué : accent ${show(s1.theme && s1.theme.accent)}`);
   }
   const afterInit = readable(init && init.storage) ? init.storage : null;
   if (!afterInit) errors.push(`[ehp-seed] liste du stockage après init illisible : ${show(init && init.storage)}`);
@@ -761,10 +879,14 @@ export async function runEhp(ctx) {
   okAck(lang, 'lang');
   const s3 = await engineStats();
   if (s3.language !== 'de') errors.push(`[ehp-live] evora:lang non appliqué (langue ${s3.language}, attendue de)`);
+  // EVORA-REV-34 (EVO-CMD) : le catalogue, envoyé après evora:init (fr) puis après evora:lang (de)
+  await new Promise((ok) => setTimeout(ok, 800));
+  judgeCatalogs(JSON.parse(await evalPage('JSON.stringify(window.__ehp.log)') || '[]'), errors, result);
   const theme = await step('theme');
   okAck(theme, 'theme');
   const s4 = await engineStats();
   if (!s4.theme || s4.theme.dark !== false || s4.theme.evora !== true) errors.push(`[ehp-live] evora:theme non appliqué (${show(s4.theme)}, attendu clair Evora)`);
+  if (!s4.theme || s4.theme.accent !== ACCENT_LIVE.toLowerCase()) errors.push(`[ehp-theme-accent] evora:theme {accent: ${ACCENT_LIVE}} non appliqué : accent ${show(s4.theme && s4.theme.accent)}`);
 
   const strangers = await step('strangers');
   const s5 = await engineStats();
@@ -830,7 +952,7 @@ export function judgeLog(log, ids, errors) {
   }
   // EVORA-REV-29 : schémas des messages du pont d'enregistrement (HOST-PROTOCOL §4.4, §7.10)
   const known = ['evora:ready', 'evora:failed', 'evora:ack', 'evora:dirty', 'evora:save', 'evora:export', 'evora:pick', 'evora:focus-out',
-    'evora:active', 'evora:closed'];
+    'evora:active', 'evora:closed', 'evora:commands'];
   for (const m of log.filter((x) => x.fromEngine)) {
     const p = m.payload || {};
     const keys = Object.keys(p);
@@ -850,6 +972,68 @@ export function judgeLog(log, ids, errors) {
       errors.push(`[ehp-multi] ${m.type} hors schéma : ${show(p)}`);
     }
     if (m.type === 'evora:focus-out' && keys.length) errors.push(`[ehp-focus-out] evora:focus-out porte une charge : ${show(p)}`);
+  }
+}
+
+// --- EVORA-REV-34 : catalogue des commandes (command.catalog, EVO-CMD) ----------------------------------------------
+
+// Les deux premiers evora:commands : après evora:init (fr) puis après evora:lang (de). Liste blanche par
+// construction (règle d'Evora du 2026-10-27) : rien de masqué, aucun « file.* » hors admis, aucun « app.* »,
+// « help.* », « prefs.* », ni la liste compilée de la coquille ; paramètres déclarés pour les seules
+// commandes de DECLARED_IDS ; destructives exactement DESTRUCTIVE ; même empreinte et mêmes commandes dans les
+// deux langues, libellés traduits. Le premier est le commands.json de l'artefact (result.commandsCatalog).
+export function judgeCatalogs(log, errors, result) {
+  const fail = (why) => errors.push(`[ehp-commands] ${why}`);
+  const cats = log.filter((m) => m.fromEngine && m.type === 'evora:commands');
+  if (cats.length < 2) fail(`evora:commands attendu après evora:init puis après evora:lang : ${cats.length} reçu(s)`);
+  if (!cats.length) return;
+  const [first, second] = cats;
+  const ready = (log.find((m) => m.fromEngine && m.type === 'evora:ready') || { payload: {} }).payload || {};
+  result.commandsCatalog = { app: ready.app, version: ready.version, ...(first.payload || {}) };
+  for (const [m, lang] of [[first, 'fr'], [second, 'de']]) {
+    if (!m) continue;
+    const p = m.payload || {};
+    const problems = [];
+    if (m.re !== null) problems.push('re posé');
+    if (!sameSet(Object.keys(p), ['lang', 'count', 'hash', 'params', 'commands'])) problems.push(`champs ${show(Object.keys(p))}`);
+    if (p.lang !== lang) problems.push(`lang ${show(p.lang)} au lieu de ${lang}`);
+    if (!/^[0-9a-f]{16}$/.test(p.hash || '')) problems.push(`hash ${show(p.hash)}`);
+    const dp = p.params || {};
+    if (dp.type !== 'object' || dp.maxProperties !== 0 || Object.keys(dp).length !== 2) problems.push(`params ${show(p.params)}`);
+    const list = Array.isArray(p.commands) ? p.commands : [];
+    if (!list.length || p.count !== list.length) problems.push(`count ${show(p.count)} pour ${list.length} commande(s)`);
+    const ids = list.map((c) => (c && typeof c === 'object' ? c.id : null));
+    if (new Set(ids).size !== ids.length) problems.push('identifiants en double');
+    for (const c of list) {
+      const fields = c && typeof c === 'object' ? Object.keys(c) : [];
+      if (!fields.length || fields.some((k) => !['id', 'label', 'path', 'enabled', 'destructive', 'params'].includes(k)) || typeof c.id !== 'string'
+        || !/^[a-z][A-Za-z0-9_.-]*$/.test(c.id) || c.id.length > 100 || typeof c.label !== 'string' || !c.label || !Array.isArray(c.path)
+        || c.path.some((x) => typeof x !== 'string') || typeof c.enabled !== 'boolean' || typeof c.destructive !== 'boolean') {
+        problems.push(`commande hors schéma ${show(c).slice(0, 160)}`);
+        break;
+      }
+      if (c.label.includes(UPSTREAM_BRAND) || c.path.some((x) => x.includes(UPSTREAM_BRAND))) problems.push(`nom amont affiché par ${c.id} : ${c.label}`);
+      if (('params' in c) !== DECLARED_IDS.includes(c.id)) problems.push(`paramètres déclarés inattendus pour ${c.id}`);
+      else if ('params' in c && (!c.params || c.params.type !== 'object' || c.params.additionalProperties !== false || !c.params.properties)) {
+        problems.push(`schéma des paramètres de ${c.id} : ${show(c.params)}`);
+      }
+    }
+    const banned = ids.filter((id) => typeof id === 'string' && (MASKED_IDS.includes(id) || /^(app|help|prefs)\./.test(id)
+      || (id.startsWith('file.') && !FILE_ADMITTED.includes(id)) || ['library.import', ...COMMANDS].includes(id)));
+    if (banned.length) problems.push(`hors liste blanche : ${banned.join(', ')}`);
+    const absent = CATALOG_IDS.filter((id) => !ids.includes(id));
+    if (absent.length) problems.push(`absentes : ${absent.join(', ')}`);
+    const destructive = list.filter((c) => c && c.destructive === true).map((c) => c.id);
+    if (!sameSet(destructive, DESTRUCTIVE)) problems.push(`destructives ${show(destructive)} au lieu de ${show(DESTRUCTIVE)}`);
+    if (problems.length) fail(`catalogue ${lang} non conforme : ${problems.slice(0, 8).join(' ; ').slice(0, 700)}`);
+  }
+  if (second) {
+    const a = first.payload || {};
+    const b = second.payload || {};
+    const idsOf = (x) => (Array.isArray(x.commands) ? x.commands : []).map((c) => c && c.id);
+    const labelsOf = (x) => (Array.isArray(x.commands) ? x.commands : []).map((c) => c && c.label);
+    if (a.hash !== b.hash || show(idsOf(a)) !== show(idsOf(b))) fail(`fr puis de : même empreinte et mêmes commandes attendues (${show(a.hash)}, ${show(b.hash)})`);
+    if (show(labelsOf(a)) === show(labelsOf(b))) fail('fr puis de : libellés identiques (catalogue non traduit)');
   }
 }
 
@@ -902,6 +1086,28 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
   const dA = await docOf(docA);
   if (!dA || dA.dirty !== false) errors.push(`[ehp-dirty] web.stats ne montre pas le document ${docA} propre : ${show(await docs())}`);
   const photoA = dA ? dA.photo : null;
+
+  // 1b. EVORA-REV-34 : menus masqués sous le pont (REV-07, REV-08) et nom affiché (E1), tels qu'affichés
+  const menus = await engine('web.menus', {});
+  const mv = menus.ok && menus.value && typeof menus.value === 'object' ? menus.value : null;
+  const items = mv && Array.isArray(mv.items) ? mv.items : [];
+  const subs = mv && Array.isArray(mv.submenus) ? mv.submenus : [];
+  const itemIds = items.map((i) => i && i.id);
+  const shownMasked = MASKED_IDS.filter((id) => itemIds.includes(id));
+  const shownSubs = MASKED_SUBMENUS.filter((n) => subs.some((x) => x && x.name === n));
+  const lostKept = KEPT_IDS.filter((id) => !itemIds.includes(id));
+  note('menus', { masking: mv && mv.masking, items: items.length, submenus: subs.length, shownMasked, shownSubs, lostKept });
+  if (!mv || mv.masking !== true || shownMasked.length || shownSubs.length || lostKept.length) {
+    errors.push(`[ehp-menus-masked] menus sous le pont : masquage ${show(mv && mv.masking)}, masquées visibles ${show(shownMasked)}, sous-menus masqués visibles ${show(shownSubs)}, témoins absents ${show(lostKept)}${menus.ok ? '' : ` (${menus.error})`}`);
+  }
+  const title = await engineEval('document.title', 20000);
+  const shownTexts = [...items.map((i) => i && i.label), ...items.flatMap((i) => (i && Array.isArray(i.path) ? i.path : [])), ...subs.map((x) => x && x.label)];
+  const branded = [...new Set(shownTexts.filter((t) => typeof t === 'string' && t.includes(UPSTREAM_BRAND)))];
+  const about = items.find((i) => i && i.id === 'app.about');
+  note('brand', { title, branded: branded.slice(0, 6), about: about && about.label });
+  if (typeof title !== 'string' || title.includes(UPSTREAM_BRAND) || !title.includes(BRAND) || branded.length || !about || !String(about.label).includes(BRAND)) {
+    errors.push(`[ehp-brand] nom affiché sous le pont : « ${BRAND} » attendu, jamais « ${UPSTREAM_BRAND} » (titre ${show(title)}, menus ${show(branded.slice(0, 6))}, À propos ${show(about && about.label)})`);
+  }
 
   // 2. revela.apply {settings} : appliqué, comme base (aucune modification annoncée)
   let at = await call('mark');
@@ -1014,7 +1220,9 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
 
   // 7. Liste blanche des commandes : refus à réception, paramètres jugés
   const photosBefore = (await engineStats()).photos;
-  for (const [command, params] of [['library.import', { paths: ['/etc/passwd'] }], ['photo.delete', {}], ['web.purgeStorage', {}], ['file.backupLibrary', {}]]) {
+  // EVORA-REV-34 : hors catalogue aussi (liste blanche par construction) : masquées, « file.* », « app.* »
+  for (const [command, params] of [['library.import', { paths: ['/etc/passwd'] }], ['app.about', {}], ['web.purgeStorage', {}], ['file.backupLibrary', {}],
+    ['file.importLightroom', {}], ['stack.group', {}]]) {
     const r = await cmd(command, params);
     if (!r || r.payload.ok !== false || r.payload.code !== 'capability') errors.push(`[ehp-command] commande hors liste ${command} : evora:ack {ok: false, code: "capability"} attendu : ${show(r && r.payload)}`);
   }
@@ -1025,6 +1233,41 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
   if (!lost || lost.payload.ok !== false || lost.payload.code !== 'not_found') errors.push(`[ehp-command] develop.get d'un docRef inconnu : not_found attendu : ${show(lost && lost.payload)}`);
   const controls = await cmd('develop.controls', { section: 'light' });
   if (!controls || controls.payload.ok !== true || !Array.isArray(controls.payload.result)) errors.push(`[ehp-command] develop.controls {section} : liste attendue : ${show(controls && controls.payload).slice(0, 200)}`);
+
+  // 7b. EVORA-REV-34 : commandes du catalogue (command.catalog) sur la photo devant : sans paramètre et avec
+  // paramètre déclaré ; la photo devient modifiée, et son enveloppe porte la note et le drapeau posés
+  at = await call('mark');
+  const ran = [];
+  for (const [command, params] of [['develop.treatment', { bw: true }], ['photo.rate', { rating: 4 }], ['photo.pick', {}]]) {
+    const r = await cmd(command, params);
+    if (!r || r.payload.ok !== true) ran.push(`${command} ${show(params)} : ${show(r && r.payload)}`);
+  }
+  const dRun = await call('wait', at, 'evora:dirty', { docRef: docA, dirty: true }, 8000);
+  if (ran.length || !dRun) errors.push(`[ehp-command-run] commandes du catalogue non exécutées (${ran.join(' ; ') || 'accusées'}, evora:dirty ${dRun ? 'reçu' : 'absent'})`);
+  const r6 = await call('req', 'evora:request-save', { reason: 'user', docRef: docA }, ['evora:save', 'evora:ack'], 15000);
+  const s6 = r6.reply && r6.reply.type === 'evora:save' ? r6.reply : null;
+  const meta6 = s6 && s6.envelope ? s6.envelope.meta : null;
+  note('catalogRun', { ran, dirty: !!dRun, meta: meta6 });
+  if (!s6 || !meta6 || meta6.rating !== 4 || meta6.flag !== 'pick') {
+    errors.push(`[ehp-command-run] l'enveloppe ne porte pas la note 4 et le drapeau « pick » posés par Evora : ${show(s6 ? meta6 : r6.reply)}`);
+  }
+  if (s6) {
+    await call('answer', 'evora:saved', s6.id, { ok: true, version: 4 });
+    await call('wait', r6.at, 'evora:dirty', { docRef: docA, dirty: false }, 8000);
+  }
+
+  // 7c. EVORA-REV-34 : aucun paramètre libre (règle d'Evora du 2026-10-27) : clé non déclarée, valeur hors
+  // schéma, chaîne qui désigne un chemin ou une URL ; rien n'est exécuté
+  at = await call('mark');
+  const loose = [];
+  for (const [command, params] of [['photo.rate', { rating: 9 }], ['photo.rate', { rating: 2, extra: 1 }], ['photo.label', { label: '../evora' }],
+    ['develop.treatment', { path: '/opfs/x' }], ['develop.auto', { x: 1 }], ['photo.flag', { flag: 'evora:pick' }]]) {
+    const r = await cmd(command, params);
+    if (!r || r.payload.ok !== false || r.payload.code !== 'invalid_content') loose.push(`${command} ${show(params)} : ${show(r && r.payload)}`);
+  }
+  await pause(700);
+  if (dirtyMsgs(await call('since', at), docA, true).length) loose.push('la photo a changé');
+  if (loose.length) errors.push(`[ehp-command-params] paramètres hors schéma : invalid_content attendu, sans effet (${loose.join(' ; ').slice(0, 600)})`);
 
   // 8. Export de deux photos : deux evora:export, chacun du docRef de sa photo ; aucun téléchargement
   at = await call('mark');
@@ -1054,6 +1297,8 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
     || accept.some((a) => !/^\.[a-z0-9]+$/.test(a)) || Object.keys(pick.payload).some((k) => !['purpose', 'accept', 'multiple'].includes(k))) {
     errors.push(`[ehp-pick] Fichier › Ajouter des photos : evora:pick {purpose: "open", accept, multiple: true} attendu : ${show(pick && pick.payload)}`);
   }
+  // EVORA-REV-34 : le sélecteur d'Evora offre les types qu'Evora ouvre dans Revela (RevelaFormats)
+  if (pick && !sameSet(accept, REVELA_ACCEPT)) errors.push(`[ehp-accept] evora:pick.accept : ${show(REVELA_ACCEPT)} attendus, reçu ${show(accept)}`);
   let docC = null;
   if (pick) {
     const served = await call('servePick', pick.id, PHOTO3);
@@ -1082,6 +1327,26 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
       await call('wait', at, 'evora:dirty', { docRef: docC, dirty: false }, 8000);
     }
   }
+  // 11. EVORA-REV-34 : commande destructive du catalogue (photo.delete) : refusée sans confirmed (forbidden),
+  // sans effet ; admise avec confirmed, la photo quitte la séance (evora:closed)
+  if (docC) {
+    const destr = [];
+    at = await call('mark');
+    const photos11 = (await engineStats()).photos;
+    const refused = await cmd('photo.delete', {});
+    await pause(800);
+    if (!refused || refused.payload.ok !== false || refused.payload.code !== 'forbidden') destr.push(`sans confirmed : ${show(refused && refused.payload)}`);
+    if ((await engineStats()).photos !== photos11 || !(await docOf(docC)) || (await call('since', at)).some((m) => m.type === 'evora:closed')) {
+      destr.push('la photo a quitté la séance sans accord');
+    }
+    at = await call('mark');
+    const admitted = (await call('req', 'evora:command', { command: 'photo.delete', params: {}, confirmed: true }, ['evora:ack'], 20000)).reply;
+    const closed = await call('wait', at, 'evora:closed', { docRef: docC }, 8000);
+    if (!admitted || admitted.payload.ok !== true || !closed || (await docOf(docC))) destr.push(`avec confirmed : ${show({ ack: admitted && admitted.payload, closed: !!closed })}`);
+    note('destructive', destr);
+    if (destr.length) errors.push(`[ehp-command-destructive] photo.delete : ${destr.join(' ; ')}`);
+  }
+
   const dl2 = await downloads();
   result.downloads = dl2;
   if (dl2.anchors.length || dl2.events) errors.push(`[ehp-download] téléchargement pendant la séance (jamais sous le pont) : ${show(dl2)}`);

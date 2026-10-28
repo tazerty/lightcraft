@@ -10,6 +10,10 @@
 //        [--summary FICHIER] [--json FICHIER]
 //   node bundle-gates.mjs selftest                      prouve chaque porte rouge sur un paquet piégé
 //                                                       et verte sur un témoin propre
+// EVORA-REV-34 (DT-S20 d'Evora) : porte de taille du module principal (.wasm) contre le budget
+// EVORA_WASM_BUDGET_BYTES (variable du dépôt de CI, D-15 « à arbitrer »), en MODE RAPPORT par défaut
+// (EVORA_WASM_BUDGET_MODE=rapport : mesure et dépassement consignés, la porte reste verte) ;
+// EVORA_WASM_BUDGET_MODE=bloquant fait rougir un dépassement. Sans budget, la mesure seule.
 import { readFileSync, readdirSync, lstatSync, writeFileSync, appendFileSync, mkdtempSync, mkdirSync, symlinkSync, existsSync } from 'node:fs';
 import { join, relative, basename, extname, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -220,8 +224,15 @@ export function gateCsp(dir) {
   };
 }
 
-// --- Taille (mesure, sans budget : aucun plafond n'est arbitré) ------------------------------
-export function measureSize(dir, zip) {
+// --- Taille (mesure ; budget DT-S20 en mode rapport, EVORA-REV-34) ----------------------------
+// `budget` : { bytes, mode } (mode « rapport » ou « bloquant »), ou null : mesure seule.
+export function budgetFromEnv(env = process.env) {
+  const raw = String(env.EVORA_WASM_BUDGET_BYTES || '').trim();
+  if (!/^[1-9][0-9]*$/.test(raw)) return null;
+  return { bytes: Number(raw), mode: env.EVORA_WASM_BUDGET_MODE === 'bloquant' ? 'bloquant' : 'rapport' };
+}
+
+export function measureSize(dir, zip, budget = null) {
   const files = walk(dir).filter((e) => e.kind === 'file');
   const total = files.reduce((n, f) => n + f.size, 0);
   const pick = (rel) => files.find((f) => f.rel === rel)?.size ?? null;
@@ -232,15 +243,21 @@ export function measureSize(dir, zip) {
     wasmGz: main ? pick(main.rel + '.gz') : null, wasmBr: main ? pick(main.rel + '.br') : null,
     js: pick('lightcraft_web.js'), font: pick('lightcraft_zh_hans.otf'), files: files.length, extracted: total,
     zip: zip ? lstatSync(zip).size : null,
+    budget: budget ? budget.bytes : null, budgetMode: budget ? budget.mode : null,
+    over: budget && main ? main.size > budget.bytes : null,
   };
+  const verdict = !budget ? 'aucun budget posé (EVORA_WASM_BUDGET_BYTES absent) : mesure seule'
+    : metrics.over ? `DÉPASSE le budget de ${budget.bytes} o de ${metrics.wasm - budget.bytes} o (mode ${budget.mode}${budget.mode === 'rapport' ? ' : consigné, à arbitrer' : ''})`
+      : `sous le budget de ${budget.bytes} o, marge ${budget.bytes - metrics.wasm} o (mode ${budget.mode})`;
   return {
-    name: 'Taille (mesure, aucun budget arbitré)',
-    ok: metrics.wasm !== null,
+    name: `Taille (budget ${budget ? `${budget.bytes} o, mode ${budget.mode}` : 'non posé'})`,
+    ok: metrics.wasm !== null && !(metrics.over && budget.mode === 'bloquant'),
     metrics,
     details: [
       `${metrics.wasmFile} brut ${metrics.wasm} o ; gzip ${metrics.wasmGz} o ; brotli ${metrics.wasmBr} o`,
       `glue JS ${metrics.js} o ; police chinoise ${metrics.font} o`,
       `${metrics.files} fichiers, ${total} o extraits ; archive ${metrics.zip} o`,
+      `budget du .wasm (DT-S20) : ${verdict}`,
     ],
   };
 }
@@ -265,8 +282,8 @@ export function externalHosts(dir) {
   };
 }
 
-export function checkAll(dir, zip) {
-  return [gateBrands(dir), gateHosting(dir, zip), gateCompression(dir), gateCsp(dir), measureSize(dir, zip), externalHosts(dir)];
+export function checkAll(dir, zip, budget = null) {
+  return [gateBrands(dir), gateHosting(dir, zip), gateCompression(dir), gateCsp(dir), measureSize(dir, zip, budget), externalHosts(dir)];
 }
 
 function render(results, title) {
@@ -325,6 +342,14 @@ function selftest() {
     ['CSP : rouge sur un gestionnaire inline et un fichier d\'empreintes faux', !t[3].ok && t[3].details.some((d) => d.includes('onclick')) && t[3].details.some((d) => d.includes('ne correspond pas'))],
     ['témoin : toutes les portes vertes', c.every((r) => r.ok)],
     ['témoin : une empreinte CSP calculée', c[3].metrics.hashes.length === 1],
+    // EVORA-REV-34 (DT-S20) : budget du .wasm (8 octets dans le paquet) en mode rapport, puis bloquant
+    ['taille : budget dépassé en mode rapport, porte verte et dépassement consigné',
+      ((r) => r.ok && r.metrics.over === true && r.metrics.budgetMode === 'rapport')(measureSize(clean.dir, clean.zip, { bytes: 4, mode: 'rapport' }))],
+    ['taille : budget dépassé en mode bloquant, porte rouge', !measureSize(clean.dir, clean.zip, { bytes: 4, mode: 'bloquant' }).ok],
+    ['taille : sous le budget, porte verte', ((r) => r.ok && r.metrics.over === false)(measureSize(clean.dir, clean.zip, { bytes: 1024, mode: 'bloquant' }))],
+    ['taille : budget lu dans l\'environnement (rapport par défaut, valeur invalide ignorée)',
+      budgetFromEnv({ EVORA_WASM_BUDGET_BYTES: '33554432' }).mode === 'rapport' && budgetFromEnv({ EVORA_WASM_BUDGET_BYTES: 'x' }) === null
+      && budgetFromEnv({ EVORA_WASM_BUDGET_BYTES: '10', EVORA_WASM_BUDGET_MODE: 'bloquant' }).mode === 'bloquant'],
   ];
   let ok = true;
   for (const [name, pass] of checks) {
@@ -347,7 +372,7 @@ function main(argv) {
     return r.problems.length || r.hashes.length === 0 ? 1 : 0;
   }
   if (cmd === 'check' && dir) {
-    const results = checkAll(dir, opt('--zip'));
+    const results = checkAll(dir, opt('--zip'), budgetFromEnv());
     const text = render(results, `Portes du bundle ${basename(dir)}`);
     console.log(text);
     if (opt('--summary')) appendFileSync(opt('--summary'), text + '\n');

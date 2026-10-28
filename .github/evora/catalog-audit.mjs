@@ -35,7 +35,8 @@ import { tmpdir } from 'node:os';
 const LOCALES = 'crates/ui-egui/locales';
 const OVERRIDES = 'crates/ui-egui/overrides/display-overrides.json';
 // Termes sensibles (D-16, E9) : jamais affichés après surcharge ; et termes relevés pour information.
-export const SENSITIVE_TERMS = ['Lumetri', 'Lightroom', 'Acrobat', 'Premiere', 'Adobe', 'Cycore'];
+// EVORA-REV-34 (E1) : le nom amont « LightCraft » ne s'affiche plus (affiché « Revela » par la surcharge).
+export const SENSITIVE_TERMS = ['Lumetri', 'Lightroom', 'Acrobat', 'Premiere', 'Adobe', 'Cycore', 'LightCraft'];
 export const INFO_TERMS = ['Apple Photos'];
 const RUST_DIRS = ['crates/ui-egui/src', 'apps/lightcraft-web/src'];
 const TEXT_DEFAULT = new Set(['#', '*', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '\u00A9', '\u00AE', '\u2122']);
@@ -274,6 +275,14 @@ function selftest() {
   const tYes = report(terms, false, true);
   checks.push(['termes avec surcharge : 0 affiché, la porte reste verte', tYes.tm.blocking === 0 && tYes.failed === false]);
   checks.push(['message entier surchargé par langue', loadOverrides(terms).shown('Adobe RGB', 'fr', 'Adobe RGB') === 'opRGB (fr)']);
+  // EVORA-REV-34 (E1) : le nom amont, sans puis avec son remplacement d'affichage
+  const brand = mk('marque', { 'About LightCraft': 'À propos de LightCraft' }, 'fn f() {}\n');
+  const bNo = report(brand, false, true);
+  checks.push(['nom amont sans surcharge : 2 affichés, la porte rougit', bNo.tm.blocking === 2 && bNo.failed === true]);
+  mkdirSync(join(brand, 'crates/ui-egui/overrides'), { recursive: true });
+  writeFileSync(join(brand, OVERRIDES), JSON.stringify({ replace: [['LightCraft', 'Revela']], messages: {} }));
+  const bYes = report(brand, false, true);
+  checks.push(['nom amont remplacé par la surcharge : 0 affiché, la porte reste verte', bYes.tm.blocking === 0 && bYes.failed === false]);
   // E10 jugé tel qu'affiché : un émoji couvert par une surcharge, puis la même surcharge défaite
   const shownCase = mk('affiche', { 'Marked ⚠ in the list': 'Marqué ⚠ dans la liste' }, 'fn f() {}\n');
   const sNo = report(shownCase, false);

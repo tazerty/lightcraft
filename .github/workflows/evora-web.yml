@@ -32,6 +32,13 @@
 # « clean »), revela.apply par réglages et par sidecar XMP, la liste blanche des commandes, l'export
 # de deux photos vers Drive (docRef de chaque fichier, aucun téléchargement), le sélecteur d'Evora,
 # F6 (evora:focus-out) et Ctrl+S ; dix moteurs factices de plus portent chacun un de ces défauts.
+#
+# Finitions du moteur (EVORA-REV-33, banc EVORA-REV-34, lot REV-FK-B2) : « pont-ehp » juge aussi, au
+# rendu, les menus masqués sous le pont (web.menus), le nom affiché (« Revela », jamais « LightCraft »,
+# terme bloquant des portes E9 et du rendu), l'accent reçu de la coquille, les types du sélecteur
+# d'Evora et le catalogue des commandes (command.catalog) ; le catalogue reçu est déposé dans
+# l'artefact (commands.json, empreinte dans SHA256SUMS). La porte de taille du .wasm lit le budget
+# EVORA_WASM_BUDGET_BYTES (variable du dépôt de CI) en mode rapport (DT-S20 d'Evora : mesure consignée).
 name: Evora web
 
 on:
@@ -346,6 +353,11 @@ jobs:
       - name: Portes du bundle — marques, hébergement, .gz/.br, CSP, taille
         id: g_bundle
         continue-on-error: true
+        env:
+          # DT-S20 d'Evora : budget du .wasm (D-15, « à arbitrer »), en mode rapport : un dépassement est
+          # consigné au résumé sans faire rougir la porte (EVORA_WASM_BUDGET_MODE=bloquant le ferait).
+          EVORA_WASM_BUDGET_BYTES: ${{ vars.EVORA_WASM_BUDGET_BYTES }}
+          EVORA_WASM_BUDGET_MODE: rapport
         run: |
           node .github/evora/bundle-gates.mjs check "${{ steps.unpacked.outputs.dir }}" --zip "${{ steps.pkg.outputs.zip }}" \
             --summary "$GITHUB_STEP_SUMMARY" --json "$RUNNER_TEMP/evora-diag/bundle-gates.json"
@@ -398,9 +410,15 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/dist/evora"
           node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/smoke" --timeout 150 \
-            --render-audit --terms-blocking --repo "$GITHUB_WORKSPACE" \
+            --render-audit --terms-blocking --repo "$GITHUB_WORKSPACE" --commands-out "$OUT/commands.json" \
             | tee "$RUNNER_TEMP/evora-diag/smoke.txt"
+          # EVORA-REV-34 : commands.json de l'artefact (catalogue de command.catalog jugé par « pont-ehp »),
+          # que le provisionnement d'Evora copie dans engines.json ; son empreinte rejoint SHA256SUMS.
+          if [ ! -s "$OUT/commands.json" ]; then echo "::error::commands.json absent : aucun catalogue reçu par « pont-ehp »"; exit 1; fi
+          (cd "$OUT" && sha256sum commands.json >> SHA256SUMS)
+          cp "$OUT/commands.json" "$RUNNER_TEMP/evora-diag/commands.json"
 
       - name: Témoins du pont EHP — moteurs factices et vrai moteur sabordés (chaque défaut doit rougir, le conforme rester vert)
         id: g_ehp_witness
