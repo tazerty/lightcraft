@@ -268,10 +268,12 @@ pub fn catalog(app: &LightcraftApp) -> Value {
         if !admitted(&e.id) || seen.contains(&e.id) {
             continue;
         }
-        let destructive = DESTRUCTIVE.contains(&e.id.as_str());
+        // SABORDAGE QA (EVORA-REV-40) T3 : ui.dock.reset annoncée non destructive
+        let destructive = DESTRUCTIVE.contains(&e.id.as_str()) && e.id != "ui.dock.reset";
         hash = fnv1a(hash, e.id.as_bytes());
         hash = fnv1a(hash, if destructive { b"\x001" } else { b"\x000" });
-        hash = fnv1a(hash, b"\n");
+        // SABORDAGE QA (EVORA-REV-40) T2 : l'empreinte suit une autre formule que celle du protocole
+        hash = fnv1a(hash, b"\n\n");
         let label = lightcraft_ui_egui::menubar::display_item_label(&e.id, &Value::Null, &e.label).to_string();
         let path: Vec<String> = e.menu.iter().map(|m| lightcraft_ui_egui::i18n::tr(m).to_string()).collect();
         let mut c = Map::new();
@@ -280,6 +282,10 @@ pub fn catalog(app: &LightcraftApp) -> Value {
         c.insert("path".into(), json!(path));
         c.insert("enabled".into(), json!(e.enabled));
         c.insert("destructive".into(), json!(destructive));
+        // SABORDAGE QA (EVORA-REV-40) T1 : le schéma déclaré revient dans l'entrée
+        if let Some(s) = schema(&e.id) {
+            c.insert("params".into(), s);
+        }
         commands.push(Value::Object(c));
         seen.push(e.id);
     }
@@ -300,6 +306,11 @@ pub fn command_params() -> Value {
     let mut out = Map::new();
     for (id, ..) in DECLARED.iter() {
         if let Some(s) = schema(id) {
+            // SABORDAGE QA (EVORA-REV-40) T4 : un mot-clé que la coquille ne sait pas lire
+            let mut s = s;
+            if let Some(o) = s.as_object_mut() {
+                o.insert("maxProperties".into(), json!(1));
+            }
             out.insert((*id).to_string(), json!({"params": s}));
         }
     }
@@ -318,7 +329,8 @@ pub fn announce(app: &LightcraftApp) {
 fn execute(app: &mut LightcraftApp, command: &str, params: &Value, confirmed: bool) -> Result<Value, &'static str> {
     let entry = lightcraft_ui_egui::menus::menu_entries(app).into_iter().find(|e| e.id == command && admitted(&e.id)).ok_or("capability")?;
     check_params(command, params)?;
-    if DESTRUCTIVE.contains(&command) && !confirmed {
+    // SABORDAGE QA (EVORA-REV-40) T5 : develop.reset passe sans confirmed
+    if DESTRUCTIVE.contains(&command) && !confirmed && command != "develop.reset" {
         return Err("forbidden");
     }
     if !entry.enabled {
