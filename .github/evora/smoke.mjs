@@ -40,6 +40,9 @@
 // de la coquille, types du sélecteur, catalogue des commandes : ehp-bench.mjs). Avec --commands-out, le
 // premier catalogue reçu (evora:commands, en français) est écrit dans ce fichier : le commands.json de
 // l'artefact, que le provisionnement d'Evora copie dans engines.json avec son empreinte.
+// EVORA-REV-38 : avec --command-params-out, les schémas des paramètres déclarés (web.commandParams, jugés
+// par le banc), sous la forme des commandes d'engines.json ({id: {params}}) : le command-params.json de
+// l'artefact, que le provisionnement recopie dans les commandes de Revela (le catalogue n'en porte aucun).
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { readFile, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
@@ -65,7 +68,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     const v = argv[i + 1];
-    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--ehp-witness') { o.ehpWitness = true; } else if (k === '--witness-only') { o.witnessOnly = v; i += 1; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--commands-out') { o.commandsOut = v; i += 1; } else if (k === '--scenario') { const [n, q, l] = v.split('|'); o.scenarios.push({ name: n, query: q || '', lang: l || undefined }); i += 1; }
+    if (k === '--site') { o.site = v; i += 1; } else if (k === '--out') { o.out = v; i += 1; } else if (k === '--chrome') { o.chrome = v; i += 1; } else if (k === '--timeout') { o.timeout = Number(v); i += 1; } else if (k === '--sabotage-csp') { o.sabotageCsp = true; } else if (k === '--render-audit') { o.renderAudit = true; } else if (k === '--terms-blocking') { o.termsBlocking = true; } else if (k === '--ehp-witness') { o.ehpWitness = true; } else if (k === '--witness-only') { o.witnessOnly = v; i += 1; } else if (k === '--repo') { o.repo = v; i += 1; } else if (k === '--commands-out') { o.commandsOut = v; i += 1; } else if (k === '--command-params-out') { o.commandParamsOut = v; i += 1; } else if (k === '--scenario') { const [n, q, l] = v.split('|'); o.scenarios.push({ name: n, query: q || '', lang: l || undefined }); i += 1; }
   }
   // E3 : langue imposée par ?lang= (codes d'Evora), vérifiée par web.stats.language ; pt sans variante (D-23) reste en anglais.
   if (o.scenarios.length === 0) {
@@ -576,6 +579,16 @@ async function main() {
       console.log(`\ncommands.json : ${catalog.count} commandes, empreinte ${catalog.hash}, langue ${catalog.lang} -> ${opts.commandsOut}`);
     } else {
       console.log('\ncommands.json : aucun catalogue reçu par « pont-ehp » (non écrit)');
+    }
+  }
+  // EVORA-REV-38 : command-params.json de l'artefact (les schémas des paramètres déclarés, jugés par le banc)
+  if (opts.commandParamsOut) {
+    const declared = (results.find((r) => r.commandParams) || {}).commandParams;
+    if (declared) {
+      await writeFile(opts.commandParamsOut, JSON.stringify(declared, null, 2) + '\n');
+      console.log(`command-params.json : ${Object.keys(declared).length} commandes à paramètres déclarés -> ${opts.commandParamsOut}`);
+    } else {
+      console.log('command-params.json : aucun schéma reçu par « pont-ehp » (non écrit)');
     }
   }
   const ok = results.every((r) => r.ok);

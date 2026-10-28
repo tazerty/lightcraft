@@ -33,6 +33,17 @@
 // des commandes (command.catalog : evora:commands en français puis en allemand, liste blanche par
 // construction, commandes exécutées, paramètres déclarés seulement, commande destructive refusée
 // sans confirmed puis admise avec) ; huit moteurs factices de plus portent chacun un de ces défauts.
+//
+// EVORA-REV-38 (correction 1 du lot REV-FK-B2 : la couture avec la coquille d'Evora) : le catalogue est
+// jugé contre le schéma FERMÉ de la coquille (shell-contract.mjs : [ehp-commands-shell]), son empreinte
+// recalculée selon le protocole ([ehp-commands-hash]), la liste des destructives prouvée par les
+// marqueurs de retrait des identifiants et des libellés ([ehp-destructive-list], règle d'Evora du
+// 2026-10-27), et les schémas des paramètres déclarés lus par web.commandParams, sous la forme des
+// commandes d'engines.json et dans le sous-ensemble que la coquille sait lire, la coquille admettant ce
+// que le moteur exécute et refusant ce qu'il refuse ([ehp-command-params-shell] ; command-params.json de
+// l'artefact) ; chaque destructive est refusée sans confirmed ; quatre moteurs factices de plus.
+
+import { canon, catalogHash, plain, removalMarked, shellAdmits, shellCatalogProblems, shellSchemaShapeOk } from './shell-contract.mjs';
 
 export const NS = 'ab'.repeat(32);
 export const OTHER_NS = 'cd'.repeat(32);
@@ -62,9 +73,30 @@ export const KEPT_IDS = ['file.addPhotos', 'dialog.export', 'edit.undo', 'develo
 // Catalogue des commandes (command.catalog) : ce qu'il doit contenir au moins, ce qui y déclare ses
 // paramètres, ce qui y est destructif, et les seules entrées « file.* » admises.
 export const CATALOG_IDS = ['edit.undo', 'develop.treatment', 'develop.auto', 'photo.rotateLeft', 'photo.pick', 'photo.rate', 'photo.flag', 'photo.label',
-  'photo.delete', 'dialog.export', 'file.addPhotos'];
+  'photo.delete', 'dialog.export', 'file.addPhotos', 'photo.unflag', 'develop.reset', 'beforeAfter.resetBefore', 'ui.dock.reset', 'panel.remove',
+  'library.clearFilter'];
 export const DECLARED_IDS = ['photo.rate', 'photo.flag', 'photo.label', 'develop.treatment'];
-export const DESTRUCTIVE = ['photo.delete'];
+// EVORA-REV-38 : les commandes que la coquille ne transmet qu'après l'accord du membre (règle d'Evora du
+// 2026-10-27 : tout ce qui retire du contenu ou un réglage, réversible ou non), et les seules commandes du
+// catalogue marquées « retrait » qui ne le sont pas, chacune justifiée.
+export const DESTRUCTIVE = ['photo.delete', 'photo.unflag', 'develop.reset', 'beforeAfter.resetBefore', 'ui.dock.reset'];
+export const DESTRUCTIVE_EXCEPTIONS = {
+  'panel.remove': 'affiche le panneau de l\'outil « Retirer » (correcteur) ; la commande elle-même ne retire rien',
+  'library.clearFilter': 'efface le filtre d\'affichage de la séance : aucune photo, retouche ni métadonnée touchée, rien d\'enregistré (mode mémoire)',
+};
+// EVORA-REV-38 : les schémas des paramètres déclarés, sous la forme des commandes d'engines.json d'Evora
+// ({id: {params}}) : ce que le provisionnement recopie (command-params.json de l'artefact).
+export const DECLARED_PARAMS = {
+  'photo.rate': { params: { type: 'object', additionalProperties: false, properties: { rating: { type: 'integer', minimum: 0, maximum: 5 } }, required: ['rating'] } },
+  'photo.flag': { params: { type: 'object', additionalProperties: false, properties: { flag: { type: 'string', enum: ['pick', 'reject', 'none'] } }, required: ['flag'] } },
+  'photo.label': { params: { type: 'object', additionalProperties: false,
+    properties: { label: { type: 'string', enum: ['red', 'yellow', 'green', 'blue', 'purple', 'none'] } }, required: ['label'] } },
+  'develop.treatment': { params: { type: 'object', additionalProperties: false, properties: { bw: { type: 'boolean' } } } },
+};
+// Charges que le moteur doit exécuter (7b), puis refuser sans effet (7c) ; la coquille doit en juger pareil.
+export const CATALOG_RUN_SAMPLES = [['develop.treatment', { bw: true }], ['photo.rate', { rating: 4 }], ['photo.pick', {}]];
+export const CATALOG_LOOSE_SAMPLES = [['photo.rate', { rating: 9 }], ['photo.rate', { rating: 2, extra: 1 }], ['photo.label', { label: '../evora' }],
+  ['develop.treatment', { path: '/opfs/x' }], ['develop.auto', { x: 1 }], ['photo.flag', { flag: 'evora:pick' }]];
 export const FILE_ADMITTED = ['file.addPhotos'];
 // E1 : le nom affiché par le moteur sous le pont, et le nom amont qui ne s'affiche jamais.
 export const BRAND = 'Revela';
@@ -117,6 +149,11 @@ export const WITNESS_FLAWS = [
   ['parametre-libre', '[ehp-command-params]'],
   ['destructive-sans-accord', '[ehp-command-destructive]'],
   ['accept-amont', '[ehp-accept]'],
+  // EVORA-REV-38 : couture avec la coquille d'Evora
+  ['params-par-entree', '[ehp-commands-shell]'],
+  ['empreinte-hors-protocole', '[ehp-commands-hash]'],
+  ['destructive-oubliee', '[ehp-destructive-list]'],
+  ['schema-hors-coquille', '[ehp-command-params-shell]'],
 ];
 
 // Témoin sur le VRAI moteur : effacements sans effet dans sa page (sabotage.js), purges qui ne
@@ -527,6 +564,11 @@ export const WITNESS_JS = `'use strict';
       }
       return JSON.stringify({ masking: flaw !== 'menus-vivants', items, submenus });
     }
+    if (id === 'web.commandParams') {
+      if (flaw !== 'schema-hors-coquille') return JSON.stringify(declaredParams);
+      const rate = Object.assign({}, declaredParams['photo.rate'].params, { maxProperties: 1 });
+      return JSON.stringify(Object.assign({}, declaredParams, { 'photo.rate': { params: rate } }));
+    }
     if (id === 'develop.set') {
       const d = activeDoc();
       if (!d) throw new Error('no photo');
@@ -587,13 +629,20 @@ export const WITNESS_JS = `'use strict';
   const kept = ${JSON.stringify(KEPT_IDS)};
   const revelaAccept = ${JSON.stringify(REVELA_ACCEPT)};
   const keyOf = { 'photo.rate': 'rating', 'photo.flag': 'flag', 'photo.label': 'label', 'develop.treatment': 'bw' };
+  // EVORA-REV-38 : entrées fermées de la coquille, empreinte du protocole, destructives de la règle d'Evora,
+  // schémas des paramètres à part (web.commandParams)
+  const destructiveIds = ${JSON.stringify(DESTRUCTIVE)};
+  const declaredParams = ${JSON.stringify(DECLARED_PARAMS)};
+  const catalogHash = ${catalogHash.toString()};
   const catalog = () => {
     const commands = catIds.map((id) => {
-      const c = { id, label: st.language + ' ' + id, path: [st.language + ' Photo'], enabled: true, destructive: id === 'photo.delete' };
-      if (declared.includes(id)) c.params = { type: 'object', additionalProperties: false, properties: { [keyOf[id]]: {} } };
+      const c = { id, label: st.language + ' ' + id, path: [st.language + ' Photo'], enabled: true, destructive: destructiveIds.includes(id) };
+      if (flaw === 'params-par-entree' && declared.includes(id)) c.params = declaredParams[id].params;
       return c;
     });
-    return { lang: st.language, count: commands.length, hash: 'f00dfeedcafe0001', params: { type: 'object', maxProperties: 0 }, commands };
+    if (flaw === 'destructive-oubliee') commands.push({ id: 'photo.removeKeywords', label: st.language + ' photo.removeKeywords', path: [st.language + ' Photo'], enabled: true, destructive: false });
+    const hash = flaw === 'empreinte-hors-protocole' ? 'f00dfeedcafe0001' : catalogHash(commands);
+    return { lang: st.language, count: commands.length, hash, params: { type: 'object', additionalProperties: false }, commands };
   };
   const announce = () => { if (flaw !== 'catalogue-absent' && st.caps.includes('command.catalog')) send('evora:commands', catalog()); };
   const pathLike = (v) => typeof v === 'string' && ['/', '\\\\', '..', ':', 'opfs', 'evora'].some((t) => v.toLowerCase().includes(t));
@@ -614,7 +663,7 @@ export const WITNESS_JS = `'use strict';
   const runCatalog = (p) => {
     const q = p.params || {};
     if (!paramsOk(p.command, q)) return { ok: false, code: 'invalid_content' };
-    if (p.command === 'photo.delete' && p.confirmed !== true && flaw !== 'destructive-sans-accord') return { ok: false, code: 'forbidden' };
+    if (destructiveIds.includes(p.command) && p.confirmed !== true && flaw !== 'destructive-sans-accord') return { ok: false, code: 'forbidden' };
     const d = activeDoc();
     if (!d) return { ok: false, code: 'busy' };
     if (flaw === 'catalogue-inerte') return { ok: true, result: null };
@@ -979,9 +1028,12 @@ export function judgeLog(log, ids, errors) {
 
 // Les deux premiers evora:commands : après evora:init (fr) puis après evora:lang (de). Liste blanche par
 // construction (règle d'Evora du 2026-10-27) : rien de masqué, aucun « file.* » hors admis, aucun « app.* »,
-// « help.* », « prefs.* », ni la liste compilée de la coquille ; paramètres déclarés pour les seules
-// commandes de DECLARED_IDS ; destructives exactement DESTRUCTIVE ; même empreinte et mêmes commandes dans les
+// « help.* », « prefs.* », ni la liste compilée de la coquille ; même empreinte et mêmes commandes dans les
 // deux langues, libellés traduits. Le premier est le commands.json de l'artefact (result.commandsCatalog).
+// EVORA-REV-38 : chacun passe le schéma FERMÉ de la coquille ([ehp-commands-shell] : aucune entrée ne porte
+// de schéma de paramètres), son empreinte est celle du protocole ([ehp-commands-hash]) ; les destructives
+// sont exactement DESTRUCTIVE, et aucune commande marquée « retrait » n'y échappe hors DESTRUCTIVE_EXCEPTIONS
+// ([ehp-destructive-list]).
 export function judgeCatalogs(log, errors, result) {
   const fail = (why) => errors.push(`[ehp-commands] ${why}`);
   const cats = log.filter((m) => m.fromEngine && m.type === 'evora:commands');
@@ -997,35 +1049,36 @@ export function judgeCatalogs(log, errors, result) {
     if (m.re !== null) problems.push('re posé');
     if (!sameSet(Object.keys(p), ['lang', 'count', 'hash', 'params', 'commands'])) problems.push(`champs ${show(Object.keys(p))}`);
     if (p.lang !== lang) problems.push(`lang ${show(p.lang)} au lieu de ${lang}`);
-    if (!/^[0-9a-f]{16}$/.test(p.hash || '')) problems.push(`hash ${show(p.hash)}`);
-    const dp = p.params || {};
-    if (dp.type !== 'object' || dp.maxProperties !== 0 || Object.keys(dp).length !== 2) problems.push(`params ${show(p.params)}`);
-    const list = Array.isArray(p.commands) ? p.commands : [];
-    if (!list.length || p.count !== list.length) problems.push(`count ${show(p.count)} pour ${list.length} commande(s)`);
-    const ids = list.map((c) => (c && typeof c === 'object' ? c.id : null));
+    // le schéma par défaut : aucun paramètre (les schémas déclarés sont ceux d'engines.json)
+    if (canon(p.params) !== canon({ type: 'object', additionalProperties: false })) problems.push(`params ${show(p.params)}`);
+    const list = Array.isArray(p.commands) ? p.commands.filter((c) => plain(c) && typeof c.id === 'string') : [];
+    if (!list.length || p.count !== (Array.isArray(p.commands) ? p.commands.length : -1)) problems.push(`count ${show(p.count)} pour ${list.length} commande(s)`);
+    const ids = list.map((c) => c.id);
     if (new Set(ids).size !== ids.length) problems.push('identifiants en double');
     for (const c of list) {
-      const fields = c && typeof c === 'object' ? Object.keys(c) : [];
-      if (!fields.length || fields.some((k) => !['id', 'label', 'path', 'enabled', 'destructive', 'params'].includes(k)) || typeof c.id !== 'string'
-        || !/^[a-z][A-Za-z0-9_.-]*$/.test(c.id) || c.id.length > 100 || typeof c.label !== 'string' || !c.label || !Array.isArray(c.path)
-        || c.path.some((x) => typeof x !== 'string') || typeof c.enabled !== 'boolean' || typeof c.destructive !== 'boolean') {
-        problems.push(`commande hors schéma ${show(c).slice(0, 160)}`);
-        break;
-      }
-      if (c.label.includes(UPSTREAM_BRAND) || c.path.some((x) => x.includes(UPSTREAM_BRAND))) problems.push(`nom amont affiché par ${c.id} : ${c.label}`);
-      if (('params' in c) !== DECLARED_IDS.includes(c.id)) problems.push(`paramètres déclarés inattendus pour ${c.id}`);
-      else if ('params' in c && (!c.params || c.params.type !== 'object' || c.params.additionalProperties !== false || !c.params.properties)) {
-        problems.push(`schéma des paramètres de ${c.id} : ${show(c.params)}`);
-      }
+      const shown = [c.label, ...(Array.isArray(c.path) ? c.path : [])].filter((x) => typeof x === 'string');
+      if (shown.some((x) => x.includes(UPSTREAM_BRAND))) problems.push(`nom amont affiché par ${c.id} : ${c.label}`);
     }
-    const banned = ids.filter((id) => typeof id === 'string' && (MASKED_IDS.includes(id) || /^(app|help|prefs)\./.test(id)
-      || (id.startsWith('file.') && !FILE_ADMITTED.includes(id)) || ['library.import', ...COMMANDS].includes(id)));
+    const banned = ids.filter((id) => MASKED_IDS.includes(id) || /^(app|help|prefs)\./.test(id)
+      || (id.startsWith('file.') && !FILE_ADMITTED.includes(id)) || ['library.import', ...COMMANDS].includes(id));
     if (banned.length) problems.push(`hors liste blanche : ${banned.join(', ')}`);
     const absent = CATALOG_IDS.filter((id) => !ids.includes(id));
     if (absent.length) problems.push(`absentes : ${absent.join(', ')}`);
-    const destructive = list.filter((c) => c && c.destructive === true).map((c) => c.id);
-    if (!sameSet(destructive, DESTRUCTIVE)) problems.push(`destructives ${show(destructive)} au lieu de ${show(DESTRUCTIVE)}`);
     if (problems.length) fail(`catalogue ${lang} non conforme : ${problems.slice(0, 8).join(' ; ').slice(0, 700)}`);
+    // EVORA-REV-38 : ce que la coquille d'Evora en dirait (schéma fermé d'evora:commands)
+    const shell = shellCatalogProblems(p);
+    if (shell.length) errors.push(`[ehp-commands-shell] catalogue ${lang} refusé par la coquille d'Evora : ${shell.join(' ; ').slice(0, 700)}`);
+    // EVORA-REV-38 : l'empreinte du protocole, FNV-1a 64 des identifiants et de leur drapeau
+    if (Array.isArray(p.commands) && p.commands.every(plain) && p.hash !== catalogHash(p.commands)) {
+      errors.push(`[ehp-commands-hash] catalogue ${lang} : empreinte ${show(p.hash)}, celle du protocole est ${catalogHash(p.commands)}`);
+    }
+    // EVORA-REV-38 : destructives exactes, et aucune commande « retrait » qui ne le soit pas, hors exception justifiée
+    const flagged = list.filter((c) => c.destructive === true).map((c) => c.id);
+    const loose = list.filter((c) => removalMarked(c) && !DESTRUCTIVE.includes(c.id) && !Object.prototype.hasOwnProperty.call(DESTRUCTIVE_EXCEPTIONS, c.id));
+    const dl = [];
+    if (!sameSet(flagged, DESTRUCTIVE)) dl.push(`destructives ${show(flagged)} au lieu de ${show(DESTRUCTIVE)}`);
+    if (loose.length) dl.push(`commandes qui retirent sans être destructives : ${loose.map((c) => `${c.id} (« ${c.label} »)`).join(', ')}`);
+    if (dl.length) errors.push(`[ehp-destructive-list] catalogue ${lang} : ${dl.join(' ; ').slice(0, 700)}`);
   }
   if (second) {
     const a = first.payload || {};
@@ -1035,6 +1088,28 @@ export function judgeCatalogs(log, errors, result) {
     if (a.hash !== b.hash || show(idsOf(a)) !== show(idsOf(b))) fail(`fr puis de : même empreinte et mêmes commandes attendues (${show(a.hash)}, ${show(b.hash)})`);
     if (show(labelsOf(a)) === show(labelsOf(b))) fail('fr puis de : libellés identiques (catalogue non traduit)');
   }
+}
+
+// EVORA-REV-38 : les schémas des paramètres déclarés (web.commandParams), tels qu'engines.json d'Evora les
+// porte ({id: {params}}) : exactement DECLARED_PARAMS, dans le sous-ensemble de JSON Schema que la coquille
+// sait lire ; la coquille, avec ces schémas, admet chaque charge que le moteur exécute et refuse chaque charge
+// qu'il refuse. Ce que web.commandParams rend est le command-params.json de l'artefact (result.commandParams).
+export function judgeCommandParams(reply, errors, result) {
+  const declared = reply && reply.ok && plain(reply.value) ? reply.value : null;
+  result.commandParams = declared;
+  const pp = [];
+  if (!declared) pp.push(`web.commandParams illisible : ${show(reply && (reply.error || reply.value)).slice(0, 200)}`);
+  else {
+    if (!sameSet(Object.keys(declared), DECLARED_IDS)) pp.push(`commandes ${show(Object.keys(declared))} au lieu de ${show(DECLARED_IDS)}`);
+    for (const [id, spec] of Object.entries(declared)) {
+      if (!plain(spec) || !sameSet(Object.keys(spec), ['params']) || !shellSchemaShapeOk(spec.params) || spec.params.type !== 'object') {
+        pp.push(`schéma de ${id} hors de ce que la coquille sait lire : ${show(spec)}`);
+      } else if (canon(spec) !== canon(DECLARED_PARAMS[id])) pp.push(`schéma de ${id} ${show(spec)} au lieu de ${show(DECLARED_PARAMS[id])}`);
+    }
+    for (const [command, params] of CATALOG_RUN_SAMPLES) if (!shellAdmits(declared, command, params)) pp.push(`${command} ${show(params)} : exécutée par le moteur, refusée par la coquille`);
+    for (const [command, params] of CATALOG_LOOSE_SAMPLES) if (shellAdmits(declared, command, params)) pp.push(`${command} ${show(params)} : refusée par le moteur, admise par la coquille`);
+  }
+  if (pp.length) errors.push(`[ehp-command-params-shell] ${pp.join(' ; ').slice(0, 700)}`);
 }
 
 // --- EVORA-REV-29 : documents de la coquille, enregistrement, commandes, exports, sélecteur, clavier --------------
@@ -1238,7 +1313,7 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
   // paramètre déclaré ; la photo devient modifiée, et son enveloppe porte la note et le drapeau posés
   at = await call('mark');
   const ran = [];
-  for (const [command, params] of [['develop.treatment', { bw: true }], ['photo.rate', { rating: 4 }], ['photo.pick', {}]]) {
+  for (const [command, params] of CATALOG_RUN_SAMPLES) {
     const r = await cmd(command, params);
     if (!r || r.payload.ok !== true) ran.push(`${command} ${show(params)} : ${show(r && r.payload)}`);
   }
@@ -1260,14 +1335,19 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
   // schéma, chaîne qui désigne un chemin ou une URL ; rien n'est exécuté
   at = await call('mark');
   const loose = [];
-  for (const [command, params] of [['photo.rate', { rating: 9 }], ['photo.rate', { rating: 2, extra: 1 }], ['photo.label', { label: '../evora' }],
-    ['develop.treatment', { path: '/opfs/x' }], ['develop.auto', { x: 1 }], ['photo.flag', { flag: 'evora:pick' }]]) {
+  for (const [command, params] of CATALOG_LOOSE_SAMPLES) {
     const r = await cmd(command, params);
     if (!r || r.payload.ok !== false || r.payload.code !== 'invalid_content') loose.push(`${command} ${show(params)} : ${show(r && r.payload)}`);
   }
   await pause(700);
   if (dirtyMsgs(await call('since', at), docA, true).length) loose.push('la photo a changé');
   if (loose.length) errors.push(`[ehp-command-params] paramètres hors schéma : invalid_content attendu, sans effet (${loose.join(' ; ').slice(0, 600)})`);
+
+  // 7d. EVORA-REV-38 : les schémas des paramètres déclarés, sous la forme des commandes d'engines.json d'Evora,
+  // jugés contre ce que la coquille sait lire et contre les charges de 7b et 7c (command-params.json de l'artefact)
+  const declaredParams = await engine('web.commandParams', {});
+  judgeCommandParams(declaredParams, errors, result);
+  note('commandParams', declaredParams.ok ? Object.keys(declaredParams.value || {}) : declaredParams.error);
 
   // 8. Export de deux photos : deux evora:export, chacun du docRef de sa photo ; aucun téléchargement
   at = await call('mark');
@@ -1335,16 +1415,24 @@ export async function runDocs({ evalPage, engineStats, engineEval, downloads, er
     const photos11 = (await engineStats()).photos;
     const refused = await cmd('photo.delete', {});
     await pause(800);
-    if (!refused || refused.payload.ok !== false || refused.payload.code !== 'forbidden') destr.push(`sans confirmed : ${show(refused && refused.payload)}`);
+    if (!refused || refused.payload.ok !== false || refused.payload.code !== 'forbidden') destr.push(`photo.delete sans confirmed : ${show(refused && refused.payload)}`);
     if ((await engineStats()).photos !== photos11 || !(await docOf(docC)) || (await call('since', at)).some((m) => m.type === 'evora:closed')) {
       destr.push('la photo a quitté la séance sans accord');
     }
+    // EVORA-REV-38 : chaque autre destructive du catalogue est refusée sans confirmed, et la photo reste telle quelle
+    at = await call('mark');
+    for (const command of DESTRUCTIVE.filter((c) => c !== 'photo.delete')) {
+      const r = await cmd(command, {});
+      if (!r || r.payload.ok !== false || r.payload.code !== 'forbidden') destr.push(`${command} sans confirmed : ${show(r && r.payload)}`);
+    }
+    await pause(800);
+    if (dirtyMsgs(await call('since', at), docC, true).length) destr.push('une destructive refusée a modifié la photo');
     at = await call('mark');
     const admitted = (await call('req', 'evora:command', { command: 'photo.delete', params: {}, confirmed: true }, ['evora:ack'], 20000)).reply;
     const closed = await call('wait', at, 'evora:closed', { docRef: docC }, 8000);
-    if (!admitted || admitted.payload.ok !== true || !closed || (await docOf(docC))) destr.push(`avec confirmed : ${show({ ack: admitted && admitted.payload, closed: !!closed })}`);
+    if (!admitted || admitted.payload.ok !== true || !closed || (await docOf(docC))) destr.push(`photo.delete avec confirmed : ${show({ ack: admitted && admitted.payload, closed: !!closed })}`);
     note('destructive', destr);
-    if (destr.length) errors.push(`[ehp-command-destructive] photo.delete : ${destr.join(' ; ')}`);
+    if (destr.length) errors.push(`[ehp-command-destructive] ${destr.join(' ; ').slice(0, 700)}`);
   }
 
   const dl2 = await downloads();

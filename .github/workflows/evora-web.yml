@@ -39,6 +39,9 @@
 # d'Evora et le catalogue des commandes (command.catalog) ; le catalogue reçu est déposé dans
 # l'artefact (commands.json, empreinte dans SHA256SUMS). La porte de taille du .wasm lit le budget
 # EVORA_WASM_BUDGET_BYTES (variable du dépôt de CI) en mode rapport (DT-S20 d'Evora : mesure consignée).
+# EVORA-REV-38 (correction 1 du lot) : le catalogue est jugé contre le schéma fermé de la coquille
+# d'Evora et son empreinte recalculée ; les schémas des paramètres déclarés sont déposés à part
+# (command-params.json, empreinte dans SHA256SUMS), sous la forme des commandes d'engines.json.
 name: Evora web
 
 on:
@@ -413,12 +416,18 @@ jobs:
           OUT="$GITHUB_WORKSPACE/dist/evora"
           node .github/evora/smoke.mjs --site "${{ steps.unpacked.outputs.dir }}" --out "$RUNNER_TEMP/evora-diag/smoke" --timeout 150 \
             --render-audit --terms-blocking --repo "$GITHUB_WORKSPACE" --commands-out "$OUT/commands.json" \
+            --command-params-out "$OUT/command-params.json" \
             | tee "$RUNNER_TEMP/evora-diag/smoke.txt"
           # EVORA-REV-34 : commands.json de l'artefact (catalogue de command.catalog jugé par « pont-ehp »),
           # que le provisionnement d'Evora copie dans engines.json ; son empreinte rejoint SHA256SUMS.
           if [ ! -s "$OUT/commands.json" ]; then echo "::error::commands.json absent : aucun catalogue reçu par « pont-ehp »"; exit 1; fi
           (cd "$OUT" && sha256sum commands.json >> SHA256SUMS)
           cp "$OUT/commands.json" "$RUNNER_TEMP/evora-diag/commands.json"
+          # EVORA-REV-38 : command-params.json de l'artefact (schémas des paramètres déclarés, sous la forme des
+          # commandes d'engines.json, jugés par « pont-ehp ») ; son empreinte rejoint SHA256SUMS.
+          if [ ! -s "$OUT/command-params.json" ]; then echo "::error::command-params.json absent : aucun schéma reçu par « pont-ehp »"; exit 1; fi
+          (cd "$OUT" && sha256sum command-params.json >> SHA256SUMS)
+          cp "$OUT/command-params.json" "$RUNNER_TEMP/evora-diag/command-params.json"
 
       - name: Témoins du pont EHP — moteurs factices et vrai moteur sabordés (chaque défaut doit rougir, le conforme rester vert)
         id: g_ehp_witness
