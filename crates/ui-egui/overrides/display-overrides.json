@@ -8,7 +8,7 @@
     "E10 (rendu) : ▸ (U+25B8) et ▾ (U+25BE) n'ont de glyphe dans aucune police de l'interface (mesuré par web.renderAudit) ; ils s'affichent › (U+203A) et ⌄ (U+2304).",
     "E10 (montée v0.9.1, EVORA-REV-24) : les lignes de What's New (docs/whats-new.md, affichées ligne à ligne par tr()) portent ⚠ (U+26A0, émoji : affiché « (!) », comme le code depuis EVORA-REV-07) et ✕ (U+2715, sans glyphe dans les polices de l'interface : affiché × U+00D7, comme le code depuis EVORA-REV-10).",
     "E9 (montée v0.9.1, EVORA-REV-24) : la ligne de What's New sur les listes de mots-clés nomme l'éditeur d'un logiciel tiers en fin de ligne (« darktable, Adobe ») ; affichée sans ce nom, terme neutre provisoire à valider avec la revue juridique (D-16).",
-    "E1 et E9 (EVORA-REV-33, lot REV-FK-B2) : le nom amont « LightCraft » s'affiche « Revela », le nom de l'app d'Evora, dans tout message affiché, dans toutes les langues, anglais compris ; la mention en texte simple « basé sur LightCraft par l'équipe ArtCraft » reste dans LICENSES/NOTICE-EVORA.txt (licence de marque amont)."
+    "E1 et E9 (EVORA-REV-33, lot REV-FK-B2) : le nom amont « LightCraft » s'affiche « Revela », le nom de l'app d'Evora, dans tout message affiché, dans toutes les langues, anglais compris ; la mention en texte simple du nom et de l'équipe amont reste dans LICENSES/NOTICE-EVORA.txt (licence de marque amont) ; ce commentaire est compilé dans le .wasm (include_str!) : aucune marque amont n'y est écrite (porte « Marques » du bundle, EVORA-REV-35)."
   ],
   "replace": [
     ["LightCraft", "Revela"],
