@@ -15,7 +15,12 @@
 //!   A command takes no parameter (`{}`), except the four of [`DECLARED`], whose keys and values
 //!   are checked one by one; a string that could name a path or a URL is refused. A command of
 //!   [`DESTRUCTIVE`] runs only with `confirmed: true` (Evora asked the member first).
+//!   EVORA-REV-38: each entry is `{id, label, path, enabled, destructive}`, the shell's closed
+//!   schema (HOST-PROTOCOL §9.1); the declared parameter schemas travel apart, through Evora's
+//!   `engines.json` (`commands: {id: {params}}`, the shell checks a command's `params` there).
 //! - `web.menus` ([`menus`]): the menus as displayed, for the CI bench and Evora's lab.
+//! - `web.commandParams` ([`command_params`]): the declared parameter schemas, as `engines.json`
+//!   lists them; the CI bench writes them to the artifact (`command-params.json`).
 
 use lightcraft_ui_egui::LightcraftApp;
 use lightcraft_ui_egui::menubar::MenuNode;
@@ -149,9 +154,13 @@ pub const FILE_ADMITTED: [&str; 1] = ["file.addPhotos"];
 pub const OFF_CATALOG: [&str; 6] =
     ["library.import", "library.sort", "library.shuffle", "photo.restore", "photo.deletePermanently", "library.emptyRecentlyDeleted"];
 
-/// The commands Evora runs only with `confirmed: true`: what the host loses without Edit › Undo
-/// giving it back (a deleted photo leaves Evora's documents, `evora:closed`).
-pub const DESTRUCTIVE: [&str; 1] = ["photo.delete"];
+/// The commands Evora runs only with `confirmed: true` (EVORA-REV-38, Evora's rule of 2026-10-27):
+/// what removes the member's work or one of their settings, whether Edit › Undo gives it back or not
+/// — a deleted photo leaves Evora's documents (`evora:closed`), a flag removed, the develop settings
+/// or the « before » state reset, the panel layout reset. The CI bench proves the list: a catalog
+/// command whose id or label says it removes something is in it, or in the bench's exceptions, each
+/// justified (a panel shown, a view filter cleared).
+pub const DESTRUCTIVE: [&str; 5] = ["photo.delete", "photo.unflag", "develop.reset", "beforeAfter.resetBefore", "ui.dock.reset"];
 
 /// What one declared parameter takes.
 #[derive(Clone, Copy)]
@@ -188,7 +197,9 @@ pub fn admitted(id: &str) -> bool {
     }
 }
 
-/// The parameter schema of a declared command (JSON Schema, as Evora's shell reads it).
+/// The parameter schema of a declared command, in the JSON Schema subset Evora's shell reads in
+/// `engines.json` (`type`, `minimum`, `maximum`, `enum`, `properties`, `required`,
+/// `additionalProperties`).
 fn schema(id: &str) -> Option<Value> {
     let (_, key, kind, required) = DECLARED.iter().find(|(d, ..)| *d == id)?;
     let property = match kind {
@@ -243,9 +254,11 @@ fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
 }
 
 /// The catalog (`evora:commands` payload): `lang` (the engine's language code), `count`, `hash`
-/// (FNV-1a 64 of each id, its destructive flag and its declared schema, in order: the catalog's
-/// identity, the same in every language and state), `params` (the default schema) and `commands`
-/// `[{id, label, path, enabled, destructive, params?}]`, labels and paths as displayed.
+/// (FNV-1a 64 of the ids and their destructive flag, in order — each id, `\0`, `1` or `0`, `\n` —
+/// as HOST-PROTOCOL §9.1 has it: the catalog's identity, the same in every language and state),
+/// `params` (the default schema: no parameter) and `commands` `[{id, label, path, enabled,
+/// destructive}]` (EVORA-REV-38: the shell's closed entry, no schema in it), labels and paths as
+/// displayed.
 pub fn catalog(app: &LightcraftApp) -> Value {
     lightcraft_ui_egui::i18n::set_language(app.ui.language);
     let mut seen: Vec<String> = Vec::new();
@@ -256,12 +269,8 @@ pub fn catalog(app: &LightcraftApp) -> Value {
             continue;
         }
         let destructive = DESTRUCTIVE.contains(&e.id.as_str());
-        let declared = schema(&e.id);
         hash = fnv1a(hash, e.id.as_bytes());
         hash = fnv1a(hash, if destructive { b"\x001" } else { b"\x000" });
-        if let Some(s) = &declared {
-            hash = fnv1a(hash, s.to_string().as_bytes());
-        }
         hash = fnv1a(hash, b"\n");
         let label = lightcraft_ui_egui::menubar::display_item_label(&e.id, &Value::Null, &e.label).to_string();
         let path: Vec<String> = e.menu.iter().map(|m| lightcraft_ui_egui::i18n::tr(m).to_string()).collect();
@@ -271,9 +280,6 @@ pub fn catalog(app: &LightcraftApp) -> Value {
         c.insert("path".into(), json!(path));
         c.insert("enabled".into(), json!(e.enabled));
         c.insert("destructive".into(), json!(destructive));
-        if let Some(s) = declared {
-            c.insert("params".into(), s);
-        }
         commands.push(Value::Object(c));
         seen.push(e.id);
     }
@@ -281,10 +287,23 @@ pub fn catalog(app: &LightcraftApp) -> Value {
         "lang": app.ui.language.code(),
         "count": commands.len(),
         "hash": format!("{hash:016x}"),
-        // the default schema: no parameter (a declared command carries its own)
-        "params": {"type": "object", "maxProperties": 0},
+        // the default schema: no parameter (the declared ones are `engines.json`'s, [`command_params`])
+        "params": {"type": "object", "additionalProperties": false},
         "commands": commands,
     })
+}
+
+/// `web.commandParams`: the declared parameter schemas, `{id: {params}}`, the form of the commands
+/// of Evora's `engines.json` (the shell checks a catalog command's `params` against them before
+/// sending it; the engine checks them again, [`check_params`]).
+pub fn command_params() -> Value {
+    let mut out = Map::new();
+    for (id, ..) in DECLARED.iter() {
+        if let Some(s) = schema(id) {
+            out.insert((*id).to_string(), json!({"params": s}));
+        }
+    }
+    Value::Object(out)
 }
 
 /// Send the catalog to the host (`evora:commands`), with `command.catalog` only.

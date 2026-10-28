@@ -882,6 +882,8 @@ impl WebApp {
                 Ok(_) if id == "web.stats" => Ok(self.web_stats()),
                 // EVORA-REV-33: the menus as displayed (CI bench, Evora's lab)
                 Ok(_) if id == "web.menus" => Ok(crate::host_menus::menus(&self.app)),
+                // EVORA-REV-38: the declared parameter schemas, as Evora's engines.json lists them
+                Ok(_) if id == "web.commandParams" => Ok(crate::host_menus::command_params()),
                 Ok(params) if id == "web.renderAudit" => Ok(render_audit(ctx, &params)),
                 Ok(params) => self.app.run(&id, params),
             };
