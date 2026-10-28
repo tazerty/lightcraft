@@ -35,8 +35,7 @@ pub fn listen(window: &web_sys::Window) {
             if once {
                 crate::ehp::focus_out();
             }
-        // SABORDAGE QA (EVORA-REV-36) S8 : Ctrl+S est laissé au canevas
-        } else if key.eq_ignore_ascii_case("s") && (ctrl || meta) && !alt && !shift && crate::ehp::has("doc.save") && key.is_empty() {
+        } else if key.eq_ignore_ascii_case("s") && (ctrl || meta) && !alt && !shift && crate::ehp::has("doc.save") {
             e.prevent_default();
             e.stop_immediate_propagation();
             if once {

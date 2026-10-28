@@ -289,8 +289,7 @@ pub fn catalog(app: &LightcraftApp) -> Value {
 
 /// Send the catalog to the host (`evora:commands`), with `command.catalog` only.
 pub fn announce(app: &LightcraftApp) {
-    // SABORDAGE QA (EVORA-REV-36) S4 : le catalogue n'est jamais envoyé
-    if crate::ehp::has("command.catalog") && app.ui.language.code().is_empty() {
+    if crate::ehp::has("command.catalog") {
         crate::ehp::commands(&catalog(app));
     }
 }
@@ -299,10 +298,8 @@ pub fn announce(app: &LightcraftApp) {
 /// confirmed if destructive, enabled.
 fn execute(app: &mut LightcraftApp, command: &str, params: &Value, confirmed: bool) -> Result<Value, &'static str> {
     let entry = lightcraft_ui_egui::menus::menu_entries(app).into_iter().find(|e| e.id == command && admitted(&e.id)).ok_or("capability")?;
-    // SABORDAGE QA (EVORA-REV-36) S6 : les paramètres ne sont pas contrôlés
-    let _ = check_params(command, params);
-    // SABORDAGE QA (EVORA-REV-36) S5 : une commande destructive passe sans confirmed
-    if DESTRUCTIVE.contains(&command) && !confirmed && command.is_empty() {
+    check_params(command, params)?;
+    if DESTRUCTIVE.contains(&command) && !confirmed {
         return Err("forbidden");
     }
     if !entry.enabled {
